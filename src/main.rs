@@ -1,12 +1,13 @@
 mod service;
 mod server;
 mod cli;
+mod db;
 
 use std::{thread, time::Duration};
 use clap::{Parser, Subcommand};
 use service::{install_service, uninstall_service};
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     #[arg(long, default_value = "false")]
@@ -15,14 +16,19 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Commands {
     Install {},
     Uninstall {},
+    #[command(trailing_var_arg=true)]
+    Submit {
+        args: Vec<String>,
+    },
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    println!("{:#?}", cli);
 
     if cli.server {
         server::run();
@@ -31,9 +37,14 @@ fn main() {
     match cli.command {
         Some(Commands::Install {}) => install_service(),
         Some(Commands::Uninstall {}) => uninstall_service(),
+        Some(Commands::Submit{ args }) => {
+            cli::submit(args)?;
+        },
         None => loop {
             println!("Hello, world!");
             thread::sleep(Duration::from_secs(1));
         },
     }
+
+    Ok(())
 }

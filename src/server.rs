@@ -8,6 +8,8 @@ use rustls::{Certificate, PrivateKey};
 use anyhow::Result;
 use crate::cli::handle_cli;
 
+const KEEP_ALIVE_SECS: u64 = 120;
+
 pub fn run() {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async move {
@@ -51,11 +53,12 @@ async fn loop_quinn() -> Result<()> {
     let (cert, key) = read_or_generate_certs().unwrap();
 
     let mut transport = TransportConfig::default();
-	transport.max_idle_timeout(Some(Duration::from_secs(120).try_into()?));
+	transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
+    transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECS - 10).try_into()?));
 	let mut server_config = ServerConfig::with_single_cert(vec![cert], key)?;
 	server_config.transport_config(transport.into());
 
-	let endpoint = Endpoint::server(server_config, "0.0.0.0:6969".parse::<SocketAddr>().unwrap())?;
+	let endpoint = Endpoint::server(server_config, "0.0.0.0:9753".parse::<SocketAddr>().unwrap())?;
 
 	while let Some(conn) = endpoint.accept().await {
 		tokio::spawn(async move {

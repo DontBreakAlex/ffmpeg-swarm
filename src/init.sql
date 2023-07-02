@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS jobs (
+    id INT PRIMARY KEY,
+    name TEXT NOT NULL,
+    out_dir TEXT NOT NULL,
+    command TEXT NOT NULL,
+    done BOOL NOT NULL DEFAULT FALSE
+);
+CREATE TABLE IF NOT EXISTS files (
+    id INT PRIMARY KEY,
+    path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    ext TEXT NOT NULL,
+    status INT NOT NULL
+);
