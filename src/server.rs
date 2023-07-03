@@ -1,17 +1,20 @@
-use std::{time::Duration, net::SocketAddr};
+use std::{net::SocketAddr, time::Duration};
 
-use directories::ProjectDirs;
-use interprocess::local_socket::NameTypeSupport;
-use interprocess::local_socket::tokio::LocalSocketListener;
-use quinn::{TransportConfig, ServerConfig, Endpoint};
-use rustls::{Certificate, PrivateKey};
-use anyhow::Result;
 use crate::cli::handle_cli;
+use anyhow::Result;
+use directories::ProjectDirs;
+use interprocess::local_socket::tokio::LocalSocketListener;
+use interprocess::local_socket::NameTypeSupport;
+use quinn::{Endpoint, ServerConfig, TransportConfig};
+use rustls::{Certificate, PrivateKey};
 
 const KEEP_ALIVE_SECS: u64 = 120;
 
 pub fn run() {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     runtime.block_on(async move {
         println!("Server running");
 
@@ -53,38 +56,34 @@ async fn loop_quinn() -> Result<()> {
     let (cert, key) = read_or_generate_certs().unwrap();
 
     let mut transport = TransportConfig::default();
-	transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
+    transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
     transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECS - 10).try_into()?));
-	let mut server_config = ServerConfig::with_single_cert(vec![cert], key)?;
-	server_config.transport_config(transport.into());
+    let mut server_config = ServerConfig::with_single_cert(vec![cert], key)?;
+    server_config.transport_config(transport.into());
 
-	let endpoint = Endpoint::server(server_config, "0.0.0.0:9753".parse::<SocketAddr>().unwrap())?;
+    let endpoint = Endpoint::server(server_config, "0.0.0.0:9753".parse::<SocketAddr>().unwrap())?;
 
-	while let Some(conn) = endpoint.accept().await {
-		tokio::spawn(async move {
-			match conn.await {
-				Ok(connection) => {
-					loop {
-						match connection.accept_bi().await {
-							Ok((send, recv)) => {
-								tokio::spawn(async move {
-								});
-							}
-							Err(e) => {
-								eprintln!("{}", e);
-								return;
-							}
-						}
-					}
-				}
-				Err(e) => eprintln!("{}", e),
-			}
-		});
-	}
+    while let Some(conn) = endpoint.accept().await {
+        tokio::spawn(async move {
+            match conn.await {
+                Ok(connection) => loop {
+                    match connection.accept_bi().await {
+                        Ok((send, recv)) => {
+                            tokio::spawn(async move {});
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            return;
+                        }
+                    }
+                },
+                Err(e) => eprintln!("{}", e),
+            }
+        });
+    }
 
     Ok(())
 }
-
 
 fn read_or_generate_certs() -> Result<(Certificate, PrivateKey)> {
     let dirs = ProjectDirs::from("org", "quinn", "quinn-examples").unwrap();
