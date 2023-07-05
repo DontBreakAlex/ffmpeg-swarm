@@ -1,12 +1,15 @@
+use std::vec;
 use std::{net::SocketAddr, time::Duration};
 
-use crate::cli::handle_cli;
 use anyhow::Result;
 use directories::ProjectDirs;
-use interprocess::local_socket::tokio::LocalSocketListener;
+use futures_lite::{AsyncReadExt, AsyncWriteExt};
+use interprocess::local_socket::tokio::{LocalSocketListener, LocalSocketStream};
 use interprocess::local_socket::NameTypeSupport;
 use quinn::{Endpoint, ServerConfig, TransportConfig};
 use rustls::{Certificate, PrivateKey};
+
+use crate::ipc::{ServiceToCli, Task, Job, CliToService};
 
 const KEEP_ALIVE_SECS: u64 = 120;
 
@@ -16,10 +19,15 @@ pub fn run() {
         .build()
         .unwrap();
     runtime.block_on(async move {
+        let cli_fut = tokio::spawn(loop_cli());
+        let quinn_fut = tokio::spawn(loop_quinn());
+
         println!("Server running");
 
-        tokio::spawn(loop_cli());
-        tokio::spawn(loop_quinn());
+        tokio::select! {
+            _ = cli_fut => {},
+            _ = quinn_fut => {},
+        }
     });
 }
 
@@ -68,7 +76,7 @@ async fn loop_quinn() -> Result<()> {
             match conn.await {
                 Ok(connection) => loop {
                     match connection.accept_bi().await {
-                        Ok((send, recv)) => {
+                        Ok((_send, _recv)) => {
                             tokio::spawn(async move {});
                         }
                         Err(e) => {
@@ -86,8 +94,9 @@ async fn loop_quinn() -> Result<()> {
 }
 
 fn read_or_generate_certs() -> Result<(Certificate, PrivateKey)> {
-    let dirs = ProjectDirs::from("org", "quinn", "quinn-examples").unwrap();
+    let dirs = ProjectDirs::from("org", "dontbreakalex", "ffmpeg-swarm").unwrap();
     let path = dirs.data_local_dir();
+    std::fs::create_dir_all(&path)?;
     let cert_path = path.join("cert.der");
     let key_path = path.join("key.der");
 
@@ -103,4 +112,24 @@ fn read_or_generate_certs() -> Result<(Certificate, PrivateKey)> {
         std::fs::write(key_path, &key)?;
         Ok((Certificate(cert), PrivateKey(key)))
     }
+}
+
+pub async fn handle_cli(conn: LocalSocketStream) -> Result<()> {
+    let (mut reader, mut writer) = conn.into_split();
+
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf).await?;
+    let len = u32::from_le_bytes(buf) as usize;
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).await?;
+    let cmd: CliToService = postcard::from_bytes(&buf)?;
+    let CliToService::SubmitJob { task, jobs } = cmd;
+    println!("Received task: {:?}", task);
+    println!("Received job: {:?}", jobs);
+    let vec = postcard::to_allocvec(&ServiceToCli::Ok)?;
+    let len = vec.len() as u32;
+    writer.write_all(&len.to_le_bytes()).await?;
+    writer.write_all(&vec).await?;
+
+    Ok(())
 }

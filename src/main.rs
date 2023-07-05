@@ -2,10 +2,11 @@ mod cli;
 mod db;
 mod server;
 mod service;
+mod ipc;
 
 use clap::{Parser, Subcommand};
 use service::{install_service, uninstall_service};
-use std::{thread, time::Duration};
+
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -40,10 +41,7 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Submit { args }) => {
             cli::submit(args)?;
         }
-        None => loop {
-            println!("Hello, world!");
-            thread::sleep(Duration::from_secs(1));
-        },
+        None => {},
     }
 
     Ok(())
