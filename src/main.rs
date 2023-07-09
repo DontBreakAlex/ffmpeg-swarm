@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     // println!("{:#?}", cli);
 
     if cli.server {
-        server::run();
+        server::run()?;
     }
 
     match cli.command {

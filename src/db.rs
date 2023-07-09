@@ -1,20 +1,43 @@
 use anyhow::Result;
 use directories::ProjectDirs;
 use rusqlite::Connection;
+use tokio::sync::{mpsc::Receiver, oneshot};
 
-pub fn init() -> Result<()> {
-    let proj_dirs = ProjectDirs::from("none", "aseo", "ffmpeg-swarm").unwrap();
-    let path = proj_dirs.data_dir().join("ffmpeg-swarm.db");
-    let conn = Connection::open(path)?;
-    conn.execute_batch(include_str!("./init.sql"))?;
+use crate::{
+    ipc::{Job, Task},
+    server::commands::do_submit,
+};
 
-    Ok(())
+pub enum SQLiteCommand {
+    SaveTask {
+        task: Task,
+        jobs: Vec<Job>,
+        reply: oneshot::Sender<Result<u32>>,
+    },
 }
 
-pub fn sqlite_connect() -> Result<Connection> {
-    let proj_dirs = ProjectDirs::from("none", "aseo", "ffmpeg-swarm").unwrap();
-    let path = proj_dirs.data_dir().join("ffmpeg-swarm.db");
-    let conn = Connection::open(path)?;
+pub async fn loop_db(mut rx: Receiver<SQLiteCommand>) -> Result<()> {
+    let mut conn = init()?;
+
+    loop {
+        let cmd = rx.recv().await.unwrap();
+        match cmd {
+            SQLiteCommand::SaveTask { task, jobs, reply } => {
+                if reply.send(do_submit(&mut conn, task, jobs)).is_err() {
+                    eprintln!("Failed to send reply to submit command");
+                }
+            }
+        }
+    }
+}
+
+pub fn init() -> Result<Connection> {
+    let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
+    let path = dirs.data_dir();
+    std::fs::create_dir_all(&path)?;
+    let db_path = path.join("ffmpeg-swarm.db");
+    let conn = Connection::open(db_path)?;
+    conn.execute_batch(include_str!("./init.sql"))?;
 
     Ok(conn)
 }

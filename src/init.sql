@@ -1,14 +1,19 @@
-CREATE TABLE IF NOT EXISTS jobs (
-    id INT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
-    out_dir TEXT NOT NULL,
-    command TEXT NOT NULL,
-    done BOOL NOT NULL DEFAULT FALSE
+    args TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP
 );
-CREATE TABLE IF NOT EXISTS files (
-    id INT PRIMARY KEY,
-    path TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    ext TEXT NOT NULL,
-    status INT NOT NULL
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY,
+    task_id INTEGER NOT NULL,
+    inputs TEXT NOT NULL,
+    output TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    FOREIGN KEY (task_id) REFERENCES tasks
 );

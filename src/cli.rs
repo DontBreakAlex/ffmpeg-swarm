@@ -21,6 +21,6 @@ pub fn submit(args: Vec<String>) -> Result<()> {
     let task = Task { args };
     let jobs = validate_files(input, output)?;
     let res = send_command(CliToService::SubmitJob { task, jobs })?;
-    println!("{:?}", res);
+    println!("{:?} ---", res);
     Ok(())
 }

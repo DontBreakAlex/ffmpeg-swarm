@@ -27,5 +27,6 @@ pub enum CliToService {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ServiceToCli {
-    Ok,
+    Error { e: String },
+    TaskCreated { id: u32 },
 }

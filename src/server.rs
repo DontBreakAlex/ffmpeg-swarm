@@ -1,6 +1,9 @@
+pub mod commands;
+
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
 
+use anyhow::anyhow;
 use anyhow::Result;
 use directories::ProjectDirs;
 use futures_lite::{AsyncReadExt, AsyncWriteExt};
@@ -8,30 +11,38 @@ use interprocess::local_socket::tokio::{LocalSocketListener, LocalSocketStream};
 use interprocess::local_socket::NameTypeSupport;
 use quinn::{Endpoint, ServerConfig, TransportConfig};
 use rustls::{Certificate, PrivateKey};
+use tokio::sync::mpsc::{self, Sender};
 
-use crate::ipc::{CliToService, Job, ServiceToCli, Task};
+use crate::db::{loop_db, SQLiteCommand};
+use crate::ipc::{CliToService, ServiceToCli};
 
 const KEEP_ALIVE_SECS: u64 = 120;
 
-pub fn run() {
+pub fn run() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
+
     runtime.block_on(async move {
-        let cli_fut = tokio::spawn(loop_cli());
+        let (tx, rx) = mpsc::channel(256);
+        let cli_fut = tokio::spawn(loop_cli(tx.clone()));
         let quinn_fut = tokio::spawn(loop_quinn());
+        let db_fut = tokio::spawn(loop_db(rx));
 
         println!("Server running");
 
-        tokio::select! {
-            _ = cli_fut => {},
-            _ = quinn_fut => {},
-        }
-    });
+        let e = tokio::select! {
+            _ = cli_fut => anyhow!("CLI loop exited unexpectedly"),
+            e = quinn_fut => anyhow!("QUIC loop exited unexpectedly {:#?}", e??),
+            e = db_fut => anyhow!("DB loop exited unexpectedly {:#?}", e??),
+        };
+
+        Err(e)
+    })
 }
 
-async fn loop_cli() {
+async fn loop_cli(tx: Sender<SQLiteCommand>) {
     let sock = {
         let name = {
             use NameTypeSupport::*;
@@ -52,8 +63,9 @@ async fn loop_cli() {
             }
         };
 
+        let tx = tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_cli(conn).await {
+            if let Err(e) = handle_cli(conn, tx).await {
                 eprintln!("Error while handling connection: {}", e);
             }
         });
@@ -94,8 +106,8 @@ async fn loop_quinn() -> Result<()> {
 }
 
 fn read_or_generate_certs() -> Result<(Certificate, PrivateKey)> {
-    let dirs = ProjectDirs::from("org", "dontbreakalex", "ffmpeg-swarm").unwrap();
-    let path = dirs.data_local_dir();
+    let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
+    let path = dirs.data_dir();
     std::fs::create_dir_all(&path)?;
     let cert_path = path.join("cert.der");
     let key_path = path.join("key.der");
@@ -114,7 +126,7 @@ fn read_or_generate_certs() -> Result<(Certificate, PrivateKey)> {
     }
 }
 
-pub async fn handle_cli(conn: LocalSocketStream) -> Result<()> {
+pub async fn handle_cli(conn: LocalSocketStream, tx: Sender<SQLiteCommand>) -> Result<()> {
     let (mut reader, mut writer) = conn.into_split();
 
     let mut buf = [0u8; 4];
@@ -123,10 +135,11 @@ pub async fn handle_cli(conn: LocalSocketStream) -> Result<()> {
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;
     let cmd: CliToService = postcard::from_bytes(&buf)?;
-    let CliToService::SubmitJob { task, jobs } = cmd;
-    println!("Received task: {:?}", task);
-    println!("Received job: {:?}", jobs);
-    let vec = postcard::to_allocvec(&ServiceToCli::Ok)?;
+    let res = match cmd {
+        CliToService::SubmitJob { task, jobs } => commands::handle_submit(tx, task, jobs).await,
+    };
+    let vec =
+        postcard::to_allocvec(&res.unwrap_or_else(|e| ServiceToCli::Error { e: e.to_string() }))?;
     let len = vec.len() as u32;
     writer.write_all(&len.to_le_bytes()).await?;
     writer.write_all(&vec).await?;
