@@ -1,6 +1,6 @@
-use std::{fs, env::current_dir, path::PathBuf};
-use anyhow::{anyhow, Result};
 use crate::ipc::Job;
+use anyhow::{anyhow, Result};
+use std::{env::current_dir, fs, path::PathBuf};
 
 pub fn validate_files(mut input: Vec<String>, output: String) -> Result<Vec<Job>> {
     match input.len() {
@@ -9,7 +9,6 @@ pub fn validate_files(mut input: Vec<String>, output: String) -> Result<Vec<Job>
         _ => Ok(vec![validate_multiple_inputs(input, output)?]),
     }
 }
-
 
 fn validate_multiple_inputs(input: Vec<String>, output: String) -> Result<Job> {
     for i in input.iter() {
@@ -40,7 +39,6 @@ fn validate_multiple_inputs(input: Vec<String>, output: String) -> Result<Job> {
         output: fs::canonicalize(output)?,
     })
 }
-
 
 fn validate_single_input(input: String, output: String) -> Result<Vec<Job>> {
     let attr = fs::metadata(&input)?;

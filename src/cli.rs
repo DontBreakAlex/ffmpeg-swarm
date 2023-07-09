@@ -1,9 +1,15 @@
+mod ipc;
 pub mod parse;
 mod validation;
-mod ipc;
 
+use crate::{
+    cli::{
+        parse::{parse_ffmpeg_args, FfmpegArgs},
+        validation::validate_files,
+    },
+    ipc::{CliToService, Task},
+};
 use anyhow::Result;
-use crate::{cli::{parse::{FfmpegArgs, parse_ffmpeg_args}, validation::validate_files}, ipc::{Task, CliToService}};
 use ipc::send_command;
 
 pub fn submit(args: Vec<String>) -> Result<()> {

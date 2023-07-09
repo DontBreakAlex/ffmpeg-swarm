@@ -9,7 +9,7 @@ use interprocess::local_socket::NameTypeSupport;
 use quinn::{Endpoint, ServerConfig, TransportConfig};
 use rustls::{Certificate, PrivateKey};
 
-use crate::ipc::{ServiceToCli, Task, Job, CliToService};
+use crate::ipc::{CliToService, Job, ServiceToCli, Task};
 
 const KEEP_ALIVE_SECS: u64 = 120;
 

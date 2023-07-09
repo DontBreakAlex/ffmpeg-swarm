@@ -1,9 +1,8 @@
-use std::io::{Write, Read};
+use std::io::{Read, Write};
 
 use crate::ipc::{CliToService, ServiceToCli};
 use anyhow::Result;
 use interprocess::local_socket::{LocalSocketStream, NameTypeSupport};
-
 
 fn connect_socket() -> Result<LocalSocketStream> {
     let name = {
@@ -16,7 +15,6 @@ fn connect_socket() -> Result<LocalSocketStream> {
     let conn = LocalSocketStream::connect(name)?;
     Ok(conn)
 }
-
 
 pub fn send_command(cmd: CliToService) -> Result<ServiceToCli> {
     let mut conn = connect_socket()?;

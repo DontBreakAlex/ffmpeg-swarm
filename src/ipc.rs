@@ -1,7 +1,7 @@
-use std::path::PathBuf;
 use crate::cli::parse::Arg;
+use std::path::PathBuf;
 
-use serde_derive::{Serialize, Deserialize};
+use serde_derive::{Deserialize, Serialize};
 
 /// Represents a ffmpeg command that can be executed on a file or a directory
 /// It contains a list of ffmpeg arguments and is the logical parent of multiple jobs
@@ -22,10 +22,7 @@ pub struct Job {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CliToService {
-    SubmitJob {
-        task: Task,
-        jobs: Vec<Job>
-    },
+    SubmitJob { task: Task, jobs: Vec<Job> },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

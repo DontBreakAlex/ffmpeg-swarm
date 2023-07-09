@@ -1,12 +1,11 @@
 mod cli;
 mod db;
+mod ipc;
 mod server;
 mod service;
-mod ipc;
 
 use clap::{Parser, Subcommand};
 use service::{install_service, uninstall_service};
-
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -41,7 +40,7 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Submit { args }) => {
             cli::submit(args)?;
         }
-        None => {},
+        None => {}
     }
 
     Ok(())
