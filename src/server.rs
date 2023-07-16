@@ -1,4 +1,5 @@
 pub mod commands;
+mod run;
 
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
@@ -15,6 +16,7 @@ use tokio::sync::mpsc::{self, Sender};
 
 use crate::db::{loop_db, SQLiteCommand};
 use crate::ipc::{CliToService, ServiceToCli};
+use crate::server::run::loop_run;
 
 const KEEP_ALIVE_SECS: u64 = 120;
 
@@ -29,6 +31,7 @@ pub fn run() -> Result<()> {
         let cli_fut = tokio::spawn(loop_cli(tx.clone()));
         let quinn_fut = tokio::spawn(loop_quinn());
         let db_fut = tokio::spawn(loop_db(rx));
+        let run_fut = tokio::spawn(loop_run(tx));
 
         println!("Server running");
 
@@ -36,6 +39,7 @@ pub fn run() -> Result<()> {
             _ = cli_fut => anyhow!("CLI loop exited unexpectedly"),
             e = quinn_fut => anyhow!("QUIC loop exited unexpectedly {:#?}", e??),
             e = db_fut => anyhow!("DB loop exited unexpectedly {:#?}", e??),
+            e = run_fut => anyhow!("Run loop exited unexpectedly {:#?}", e??),
         };
 
         Err(e)

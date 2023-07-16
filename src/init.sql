@@ -15,5 +15,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
+    success BOOLEAN,
     FOREIGN KEY (task_id) REFERENCES tasks
 );
+
+UPDATE jobs SET started_at = NULL WHERE finished_at IS NULL;

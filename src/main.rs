@@ -19,13 +19,14 @@ enum Commands {
     Server,
     Install,
     Uninstall,
-    #[command(trailing_var_arg = true)]
     Submit {
         args: Vec<String>,
     },
 }
 
 fn main() -> anyhow::Result<()> {
+    // let args: Vec<String> = std::env::args().collect();
+    // println!("args: {:?}", args);
     let cli = Cli::parse();
 
     match cli.command {
