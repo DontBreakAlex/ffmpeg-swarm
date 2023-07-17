@@ -1,6 +1,8 @@
-mod submit;
-mod dispatch;
 mod complete;
-pub use submit::*;
-pub use dispatch::*;
+mod dispatch;
+mod submit;
+mod advertise;
 pub use complete::*;
+pub use dispatch::*;
+pub use submit::*;
+pub use advertise::*;

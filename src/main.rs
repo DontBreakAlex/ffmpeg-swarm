@@ -19,9 +19,7 @@ enum Commands {
     Server,
     Install,
     Uninstall,
-    Submit {
-        args: Vec<String>,
-    },
+    Submit { args: Vec<String> },
 }
 
 fn main() -> anyhow::Result<()> {

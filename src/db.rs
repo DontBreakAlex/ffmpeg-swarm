@@ -1,12 +1,16 @@
+use anyhow::anyhow;
 use anyhow::Result;
 use directories::ProjectDirs;
 use rusqlite::Connection;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc::Receiver, oneshot};
-use anyhow::anyhow;
 
+use crate::server::commands::AdvertiseMessage;
+use crate::server::commands::do_advertise;
 use crate::{
+    cli::parse::Arg,
     ipc::{Job, Task},
-    server::commands::{do_submit, do_dispatch, DispatchedJob, do_complete}, cli::parse::Arg,
+    server::commands::{do_complete, do_dispatch, do_submit, DispatchedJob},
 };
 
 pub enum SQLiteCommand {
@@ -21,27 +25,37 @@ pub enum SQLiteCommand {
     Complete {
         job: u32,
         success: bool,
-    }
+    },
+    Advertise,
 }
 
-pub async fn loop_db(mut rx: Receiver<SQLiteCommand>) -> Result<()> {
+pub async fn loop_db(mut rx: Receiver<SQLiteCommand>, tx: Sender<Option<AdvertiseMessage>>) -> Result<()> {
     let mut conn = init()?;
+    println!("{:?}", tx);
 
     loop {
-        let cmd = rx.recv().await.ok_or_else(|| anyhow!("Failed to receive command"))?;
+        let cmd = rx
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("Failed to receive command"))?;
         match cmd {
             SQLiteCommand::SaveTask { task, jobs, reply } => {
                 if reply.send(do_submit(&mut conn, task, jobs)).is_err() {
                     eprintln!("Failed to send reply to submit command");
                 }
-            },
+            }
             SQLiteCommand::Dispatch { reply } => {
                 if reply.send(do_dispatch(&mut conn)).is_err() {
                     eprintln!("Failed to send reply to dispatch command");
                 }
-            },
+            }
             SQLiteCommand::Complete { job, success } => {
                 do_complete(&mut conn, job, success)?;
+            }
+            SQLiteCommand::Advertise => {
+                if tx.send(do_advertise(&mut conn)?).await.is_err() {
+                    eprintln!("Failed to send advertise message");
+                }
             }
         }
     }
