@@ -1,5 +1,6 @@
 pub mod commands;
 mod run;
+mod coordination;
 
 use once_cell::sync::OnceCell;
 use std::net::IpAddr;
@@ -189,11 +190,12 @@ async fn loop_mqtt(
     mut rx: Receiver<Option<AdvertiseMessage>>,
 ) -> Result<()> {
     let topic = gen_topic()?;
+    let uuid = read_or_generate_uuid()?;
     let mut mqttoptions = MqttOptions::new(read_or_generate_uuid()?.to_string(), "test.mosquitto.org", 1883);
     mqttoptions.set_keep_alive(Duration::from_secs(30));
 
-    let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
-    client.subscribe(&topic, QoS::AtLeastOnce).await.unwrap();
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+    client.subscribe(&topic, QoS::AtLeastOnce).await?;
 
     let ips: Vec<IpAddr> = list_afinet_netifas()?
         .into_iter()
@@ -201,6 +203,7 @@ async fn loop_mqtt(
         .map(|i| i.1)
         .collect();
 
+    let _tx = tx.clone();
     tokio::spawn(async move {
         while let Ok(notification) = eventloop.poll().await {
             println!("Received = {:?}", notification);
@@ -209,6 +212,10 @@ async fn loop_mqtt(
                     Packet::Publish(p) => {
                         let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else { continue };
                         println!("Received = {:?}", msg);
+
+                        if msg.peer_id != *uuid {
+                            _tx.send(SQLiteCommand::SavePeer { message: msg }).await.expect("Db channel not to be closed");
+                        }
                     },
                     _ => {}
                 },
@@ -232,11 +239,8 @@ async fn loop_mqtt(
 
         client
             .publish(&topic, QoS::AtLeastOnce, true, postcard::to_allocvec(&msg)?)
-            .await
-            .unwrap();
+            .await?;
     }
-
-    Ok(())
 }
 
 fn gen_topic() -> Result<String> {

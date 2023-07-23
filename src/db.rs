@@ -1,15 +1,21 @@
 use anyhow::anyhow;
 use anyhow::Result;
+use chrono::NaiveDateTime;
+use diesel::Connection;
+use diesel_migrations::EmbeddedMigrations;
+use diesel_migrations::embed_migrations;
+use diesel_migrations::MigrationHarness;
+use diesel::prelude::*;
 use directories::ProjectDirs;
-use rusqlite::Connection;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc::Receiver, oneshot};
 
+use crate::models::Job;
 use crate::server::commands::AdvertiseMessage;
 use crate::server::commands::do_advertise;
+use crate::server::commands::do_save_peer;
 use crate::{
-    cli::parse::Arg,
-    ipc::{Job, Task},
+    ipc::{Task},
     server::commands::{do_complete, do_dispatch, do_submit, DispatchedJob},
 };
 
@@ -27,6 +33,9 @@ pub enum SQLiteCommand {
         success: bool,
     },
     Advertise,
+    SavePeer {
+        message: AdvertiseMessage,
+    }
 }
 
 pub async fn loop_db(mut rx: Receiver<SQLiteCommand>, tx: Sender<Option<AdvertiseMessage>>) -> Result<()> {
@@ -57,17 +66,31 @@ pub async fn loop_db(mut rx: Receiver<SQLiteCommand>, tx: Sender<Option<Advertis
                     eprintln!("Failed to send advertise message");
                 }
             }
+            SQLiteCommand::SavePeer { message } => {
+                if do_save_peer(&mut conn, message).is_err() {
+                    eprintln!("Failed to save peer");
+                }
+            }
         }
     }
 }
 
-pub fn init() -> Result<Connection> {
+const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
+
+pub fn init() -> Result<SqliteConnection> {
+    use crate::schema::jobs::dsl::*;
+
     let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
     let path = dirs.data_dir();
     std::fs::create_dir_all(&path)?;
     let db_path = path.join("ffmpeg-swarm.db");
-    let conn = Connection::open(db_path)?;
-    conn.execute_batch(include_str!("./init.sql"))?;
+    println!("Database path is {:?}", db_path);
+    let mut conn = SqliteConnection::establish(&db_path.to_str().expect("Database path to be a valid utf-8 str"))?;
+    conn.run_pending_migrations(MIGRATIONS).map_err(anyhow::Error::msg)?;
+    diesel::update(jobs)
+        .set(started_at.eq(None::<NaiveDateTime>))
+        .filter(finished_at.is_null())
+        .execute(&mut conn)?;
 
     Ok(conn)
 }

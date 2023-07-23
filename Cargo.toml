@@ -8,7 +8,10 @@ edition = "2021"
 [dependencies]
 anyhow = { version = "1.0.71", features = ["backtrace"] }
 base64 = "0.21.2"
+chrono = "0.4.26"
 clap = { version = "4.3.10", features = ["derive"] }
+diesel = { version = "2.1.0", default-features = false, features = ["sqlite", "chrono", "uuid"] }
+diesel_migrations = { version = "2.1.0", features = ["sqlite"] }
 directories = "5.0.1"
 futures = { version = "0.3.28", default-features = false }
 futures-lite = "1.13.0"
@@ -19,7 +22,6 @@ postcard = { version = "1.0.4", features = ["alloc"] }
 quinn = "0.10.1"
 rcgen = "0.11.1"
 rumqttc = "0.22.0"
-rusqlite = { version = "0.29.0", features = ["bundled"] }
 rustls = "0.21.2"
 serde = "1.0.166"
 serde_derive = "1.0.166"

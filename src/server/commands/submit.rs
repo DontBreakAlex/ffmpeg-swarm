@@ -1,5 +1,5 @@
 use anyhow::{Error, Result};
-use rusqlite::{params, Connection, Transaction};
+use diesel::{Connection, SqliteConnection};
 use tokio::sync::mpsc::Sender;
 
 use crate::{
@@ -23,25 +23,30 @@ pub async fn handle_submit(
     Ok(ServiceToCli::TaskCreated { id })
 }
 
-pub fn do_submit(conn: &mut Connection, task: Task, jobs: Vec<Job>) -> Result<u32> {
-    let tx = conn.transaction()?;
-    let task_id = save_task(&tx, &task)?;
-    save_jobs(&tx, task_id, &jobs)?;
-    tx.commit()?;
-    Ok(task_id as u32)
+pub fn do_submit(conn: &mut SqliteConnection, task: Task, jobs: Vec<Job>) -> Result<u32> {
+    conn.transaction(|conn| {
+        let task_id = save_task(conn, &task)?;
+        save_jobs(conn, task_id, &jobs)?;
+        Ok(task_id as u32)
+    })
 }
 
-fn save_task(tx: &Transaction, task: &Task) -> Result<i64> {
-    let mut stmt = tx.prepare_cached(r#"INSERT INTO tasks (name, args) VALUES ("TASK", ?)"#)?;
-    let args = serde_json::to_string(&task.args)?;
-    let id = stmt.insert(params![args])?;
+fn save_task(conn: &mut SqliteConnection, task: &Task) -> Result<i64> {
+    use crate::schema::tasks::dsl::*;
+    // let mut stmt = conn.prepare_cached(r#"INSERT INTO tasks (name, args) VALUES ("TASK", ?)"#)?;
+    // let args = serde_json::to_string(&task.args)?;
+    // let id = stmt.insert(params![args])?;
+    let id = diesel::insert_into(tasks)
+        .values(task)
+        .execute(conn)?;
+
     println!("Task id: {}", id);
     Ok(id)
 }
 
-fn save_jobs(tx: &Transaction, task_id: i64, jobs: &[Job]) -> Result<()> {
+fn save_jobs(conn: &mut SqliteConnection, task_id: i64, jobs: &[Job]) -> Result<()> {
     let mut stmt =
-        tx.prepare_cached(r#"INSERT INTO jobs (task_id, inputs, output) VALUES (?, ?, ?)"#)?;
+        conn.prepare_cached(r#"INSERT INTO jobs (task_id, inputs, output) VALUES (?, ?, ?)"#)?;
     for job in jobs {
         let inputs = serde_json::to_string(&job.inputs)?;
         let output = job
