@@ -5,8 +5,9 @@ use rusqlite::Connection;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc::Receiver, oneshot};
 
-use crate::server::commands::AdvertiseMessage;
 use crate::server::commands::do_advertise;
+use crate::server::commands::do_save_peer;
+use crate::server::commands::AdvertiseMessage;
 use crate::{
     cli::parse::Arg,
     ipc::{Job, Task},
@@ -27,9 +28,15 @@ pub enum SQLiteCommand {
         success: bool,
     },
     Advertise,
+    SavePeer {
+        message: AdvertiseMessage,
+    },
 }
 
-pub async fn loop_db(mut rx: Receiver<SQLiteCommand>, tx: Sender<Option<AdvertiseMessage>>) -> Result<()> {
+pub async fn loop_db(
+    mut rx: Receiver<SQLiteCommand>,
+    tx: Sender<Option<AdvertiseMessage>>,
+) -> Result<()> {
     let mut conn = init()?;
     println!("{:?}", tx);
 
@@ -55,6 +62,11 @@ pub async fn loop_db(mut rx: Receiver<SQLiteCommand>, tx: Sender<Option<Advertis
             SQLiteCommand::Advertise => {
                 if tx.send(do_advertise(&mut conn)?).await.is_err() {
                     eprintln!("Failed to send advertise message");
+                }
+            }
+            SQLiteCommand::SavePeer { message } => {
+                if do_save_peer(&mut conn, &message).is_err() {
+                    eprintln!("Failed to save peer");
                 }
             }
         }

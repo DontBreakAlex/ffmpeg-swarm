@@ -16,7 +16,7 @@ use interprocess::local_socket::tokio::{LocalSocketListener, LocalSocketStream};
 use interprocess::local_socket::NameTypeSupport;
 use local_ip_address::list_afinet_netifas;
 use quinn::{Endpoint, ServerConfig, TransportConfig};
-use rumqttc::{AsyncClient, MqttOptions, QoS, Event, Packet};
+use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use rustls::{Certificate, PrivateKey};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -188,8 +188,13 @@ async fn loop_mqtt(
     tx: Sender<SQLiteCommand>,
     mut rx: Receiver<Option<AdvertiseMessage>>,
 ) -> Result<()> {
+    let uuid = read_or_generate_uuid()?;
     let topic = gen_topic()?;
-    let mut mqttoptions = MqttOptions::new(read_or_generate_uuid()?.to_string(), "test.mosquitto.org", 1883);
+    let mut mqttoptions = MqttOptions::new(
+        read_or_generate_uuid()?.to_string(),
+        "test.mosquitto.org",
+        1883,
+    );
     mqttoptions.set_keep_alive(Duration::from_secs(30));
 
     let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
@@ -201,6 +206,7 @@ async fn loop_mqtt(
         .map(|i| i.1)
         .collect();
 
+    let _tx = tx.clone();
     tokio::spawn(async move {
         while let Ok(notification) = eventloop.poll().await {
             println!("Received = {:?}", notification);
@@ -209,10 +215,16 @@ async fn loop_mqtt(
                     Packet::Publish(p) => {
                         let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else { continue };
                         println!("Received = {:?}", msg);
-                    },
+                        if msg.peer_id == *uuid {
+                            continue;
+                        }
+                        if let Err(e) = _tx.send(SQLiteCommand::SavePeer { message: msg }).await {
+                            eprintln!("Failed to save peer: {}", e);
+                        }
+                    }
                     _ => {}
                 },
-                Event::Outgoing(_) => {},
+                Event::Outgoing(_) => {}
             }
         }
     });

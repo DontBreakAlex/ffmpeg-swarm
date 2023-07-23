@@ -19,4 +19,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     FOREIGN KEY (task_id) REFERENCES tasks
 );
 
+CREATE TABLE IF NOT EXISTS known_peers (
+    uuid BLOB PRIMARY KEY ON CONFLICT REPLACE,
+    ips BLOB NOT NULL,
+    oldest_job TIMESTAMP
+);
+
 UPDATE jobs SET started_at = NULL WHERE finished_at IS NULL;
