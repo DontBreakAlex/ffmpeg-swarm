@@ -1,33 +1,27 @@
 pub mod commands;
-mod run;
+pub mod run;
 
 use once_cell::sync::OnceCell;
-use std::net::IpAddr;
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::anyhow;
 use anyhow::Result;
-use base64::engine::general_purpose;
 use base64::Engine;
 use directories::ProjectDirs;
 use futures_lite::{AsyncReadExt, AsyncWriteExt};
 use interprocess::local_socket::tokio::{LocalSocketListener, LocalSocketStream};
 use interprocess::local_socket::NameTypeSupport;
-use local_ip_address::list_afinet_netifas;
 use quinn::{Endpoint, ServerConfig, TransportConfig};
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use rustls::{Certificate, PrivateKey};
-use sha2::{Digest, Sha256};
-use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::time::{sleep, timeout};
+use sha2::Digest;
+use tokio::sync::mpsc::{self, Sender};
 use uuid::Uuid;
 
 use crate::db::{loop_db, SQLiteCommand};
 use crate::ipc::{CliToService, ServiceToCli};
+use crate::mqtt;
 use crate::server::run::loop_run;
-
-use self::commands::AdvertiseMessage;
 
 const KEEP_ALIVE_SECS: u64 = 120;
 
@@ -40,11 +34,13 @@ pub fn run() -> Result<()> {
     runtime.block_on(async move {
         let (db_tx, db_rx) = mpsc::channel(256);
         let (advertise_tx, advertise_rx) = mpsc::channel(256);
+        let (run_tx, run_rx) = mpsc::channel(1);
+
         let cli_fut = tokio::spawn(loop_cli(db_tx.clone()));
         let quinn_fut = tokio::spawn(loop_quinn());
-        let db_fut = tokio::spawn(loop_db(db_rx, advertise_tx));
-        // let run_fut = tokio::spawn(loop_run(db_tx.clone()));
-        let mqtt_fut = tokio::spawn(loop_mqtt(db_tx, advertise_rx));
+        let db_fut = tokio::spawn(loop_db(db_rx, advertise_tx, run_tx));
+        let run_fut = tokio::spawn(loop_run(db_tx.clone(), run_rx));
+        let mqtt_fut = tokio::spawn(mqtt::loop_mqtt(db_tx, advertise_rx));
 
         println!("Server running");
 
@@ -123,7 +119,7 @@ async fn loop_quinn() -> Result<()> {
     Ok(())
 }
 
-fn read_or_generate_certs() -> Result<(Certificate, PrivateKey)> {
+pub fn read_or_generate_certs() -> Result<(Certificate, PrivateKey)> {
     let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
     let path = dirs.data_dir();
     std::fs::create_dir_all(&path)?;
@@ -144,7 +140,7 @@ fn read_or_generate_certs() -> Result<(Certificate, PrivateKey)> {
     }
 }
 
-fn read_or_generate_uuid() -> Result<&'static Uuid> {
+pub fn read_or_generate_uuid() -> Result<&'static Uuid> {
     static UUID: OnceCell<Uuid> = OnceCell::new();
     UUID.get_or_try_init(|| {
         let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
@@ -182,83 +178,4 @@ pub async fn handle_cli(conn: LocalSocketStream, tx: Sender<SQLiteCommand>) -> R
     writer.write_all(&vec).await?;
 
     Ok(())
-}
-
-async fn loop_mqtt(
-    tx: Sender<SQLiteCommand>,
-    mut rx: Receiver<Option<AdvertiseMessage>>,
-) -> Result<()> {
-    let uuid = read_or_generate_uuid()?;
-    let topic = gen_topic()?;
-    let mut mqttoptions = MqttOptions::new(
-        read_or_generate_uuid()?.to_string(),
-        "test.mosquitto.org",
-        1883,
-    );
-    mqttoptions.set_keep_alive(Duration::from_secs(30));
-
-    let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
-    client.subscribe(&topic, QoS::AtLeastOnce).await.unwrap();
-
-    let ips: Vec<IpAddr> = list_afinet_netifas()?
-        .into_iter()
-        .filter(|(_, ip)| !ip.is_loopback())
-        .map(|i| i.1)
-        .collect();
-
-    let _tx = tx.clone();
-    tokio::spawn(async move {
-        while let Ok(notification) = eventloop.poll().await {
-            println!("Received = {:?}", notification);
-            match notification {
-                Event::Incoming(packet) => match packet {
-                    Packet::Publish(p) => {
-                        let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else { continue };
-                        println!("Received = {:?}", msg);
-                        if msg.peer_id == *uuid {
-                            continue;
-                        }
-                        if let Err(e) = _tx.send(SQLiteCommand::SavePeer { message: msg }).await {
-                            eprintln!("Failed to save peer: {}", e);
-                        }
-                    }
-                    _ => {}
-                },
-                Event::Outgoing(_) => {}
-            }
-        }
-    });
-
-    loop {
-        let msg = timeout(Duration::from_secs(20), rx.recv()).await;
-        let mut msg = match msg {
-            Ok(Some(Some(msg))) => msg,
-            Ok(None) => unreachable!(),
-            Ok(Some(None)) => continue,
-            Err(_) => {
-                tx.send(SQLiteCommand::Advertise).await?;
-                continue;
-            }
-        };
-        msg.peer_ips = ips.clone();
-
-        client
-            .publish(&topic, QoS::AtLeastOnce, true, postcard::to_allocvec(&msg)?)
-            .await
-            .unwrap();
-    }
-
-    Ok(())
-}
-
-fn gen_topic() -> Result<String> {
-    let (cert, _) = read_or_generate_certs()?;
-    let mut hasher = Sha256::new();
-    hasher.update(&cert.0);
-    let cert_hash = hasher.finalize();
-    let topic = format!(
-        "ffmpeg-swarm/{}",
-        general_purpose::URL_SAFE_NO_PAD.encode(cert_hash)
-    );
-    Ok(topic)
 }

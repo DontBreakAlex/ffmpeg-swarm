@@ -25,3 +25,13 @@ pub fn do_advertise(conn: &mut Connection) -> Result<Option<AdvertiseMessage>> {
         peer_id: *peer_id,
     }))
 }
+
+impl AdvertiseMessage {
+	pub fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+		Ok(Self {
+			oldest_job: row.get(2)?,
+			peer_ips: postcard::from_bytes(&row.get::<_, Vec<u8>>(1)?).map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Blob, Box::new(e)))?,
+			peer_id: row.get(0)?,
+		})
+	}
+}

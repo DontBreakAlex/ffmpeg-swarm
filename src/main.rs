@@ -3,6 +3,7 @@ mod db;
 mod ipc;
 mod server;
 mod service;
+mod mqtt;
 
 use clap::{Parser, Subcommand};
 use service::{install_service, uninstall_service};
