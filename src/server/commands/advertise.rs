@@ -5,7 +5,7 @@ use serde_derive::{Deserialize, Serialize};
 use std::net::IpAddr;
 use uuid::Uuid;
 
-use crate::server::read_or_generate_uuid;
+use crate::utils::read_or_generate_uuid;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AdvertiseMessage {

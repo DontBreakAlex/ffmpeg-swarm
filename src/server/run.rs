@@ -14,7 +14,7 @@ use tokio::sync::mpsc::Receiver;
 
 use crate::{cli::parse::Arg, db::SQLiteCommand, ipc::Job};
 use crate::server::commands::RunnableJob;
-use crate::server::read_or_generate_certs;
+use crate::utils::read_or_generate_certs;
 
 use super::commands::{handle_dispatch, LocalJob, AdvertiseMessage};
 

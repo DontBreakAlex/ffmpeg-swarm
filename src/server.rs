@@ -9,18 +9,24 @@ use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
 use directories::ProjectDirs;
+use futures::SinkExt;
 use futures_lite::{AsyncReadExt, AsyncWriteExt};
 use interprocess::local_socket::tokio::{LocalSocketListener, LocalSocketStream};
 use interprocess::local_socket::NameTypeSupport;
-use quinn::{Endpoint, ServerConfig, TransportConfig};
+use quinn::{Connection, Endpoint, SendStream, ServerConfig, TransportConfig};
 use rustls::{Certificate, PrivateKey};
 use sha2::Digest;
+use tokio::fs::File;
+use tokio::io::copy_buf;
 use tokio::sync::mpsc::{self, Sender};
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::db::{loop_db, SQLiteCommand};
 use crate::ipc::{CliToService, ServiceToCli};
-use crate::mqtt;
+use crate::{cli, mqtt, utils};
+use crate::inc::{RequestMessage, StreamedJob};
+use crate::server::commands::LocalJob;
 use crate::server::run::loop_run;
 
 const KEEP_ALIVE_SECS: u64 = 120;
@@ -36,8 +42,8 @@ pub fn run() -> Result<()> {
         let (advertise_tx, advertise_rx) = mpsc::channel(256);
         let (run_tx, run_rx) = mpsc::channel(1);
 
-        let cli_fut = tokio::spawn(loop_cli(db_tx.clone()));
-        let quinn_fut = tokio::spawn(loop_quinn());
+        let cli_fut = tokio::spawn(cli::loop_cli(db_tx.clone()));
+        let quinn_fut = tokio::spawn(loop_quinn(db_tx.clone()));
         let db_fut = tokio::spawn(loop_db(db_rx, advertise_tx, run_tx));
         let run_fut = tokio::spawn(loop_run(db_tx.clone(), run_rx));
         let mqtt_fut = tokio::spawn(mqtt::loop_mqtt(db_tx, advertise_rx));
@@ -56,38 +62,8 @@ pub fn run() -> Result<()> {
     })
 }
 
-async fn loop_cli(tx: Sender<SQLiteCommand>) {
-    let sock = {
-        let name = {
-            use NameTypeSupport::*;
-            match NameTypeSupport::ALWAYS_AVAILABLE {
-                OnlyPaths => "/tmp/ffmpeg-swarm.sock",
-                OnlyNamespaced | Both => "@ffmpeg-swarm.sock",
-            }
-        };
-        LocalSocketListener::bind(name).expect("Expected to bind to socket")
-    };
-
-    loop {
-        let conn = match sock.accept().await {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("There was an error with an incoming connection: {}", e);
-                continue;
-            }
-        };
-
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_cli(conn, tx).await {
-                eprintln!("Error while handling connection: {}", e);
-            }
-        });
-    }
-}
-
-async fn loop_quinn() -> Result<()> {
-    let (cert, key) = read_or_generate_certs().unwrap();
+async fn loop_quinn(tx: Sender<SQLiteCommand>) -> Result<()> {
+    let (cert, key) = utils::read_or_generate_certs().unwrap();
 
     let mut transport = TransportConfig::default();
     transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
@@ -102,8 +78,10 @@ async fn loop_quinn() -> Result<()> {
             match conn.await {
                 Ok(connection) => loop {
                     match connection.accept_bi().await {
-                        Ok((_send, _recv)) => {
-                            tokio::spawn(async move {});
+                        Ok((send, recv)) => {
+	                        let _tx = tx.clone();
+	                        let _conn = conn.clone();
+                            tokio::spawn(handle_bi(send, recv, _tx, _conn));
                         }
                         Err(e) => {
                             eprintln!("{}", e);
@@ -119,63 +97,50 @@ async fn loop_quinn() -> Result<()> {
     Ok(())
 }
 
-pub fn read_or_generate_certs() -> Result<(Certificate, PrivateKey)> {
-    let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
-    let path = dirs.data_dir();
-    std::fs::create_dir_all(&path)?;
-    let cert_path = path.join("cert.der");
-    let key_path = path.join("key.der");
+async fn handle_bi(mut send: quinn::SendStream, mut recv: quinn::RecvStream, tx: Sender<SQLiteCommand>, conn: Connection) -> Result<()> {
+	let vec = recv.read_to_end(1_000_000).await?;
+	let msg: RequestMessage = postcard::from_bytes(&vec)?;
 
-    if cert_path.exists() && key_path.exists() {
-        let cert = std::fs::read(cert_path)?;
-        let key = std::fs::read(key_path)?;
-        Ok((Certificate(cert), PrivateKey(key)))
-    } else {
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let key = cert.serialize_private_key_der();
-        let cert = cert.serialize_der().unwrap();
-        std::fs::write(cert_path, &cert)?;
-        std::fs::write(key_path, &key)?;
-        Ok((Certificate(cert), PrivateKey(key)))
-    }
+	match msg {
+		RequestMessage::RequestJob => handle_request_job(conn, send, tx).await?,
+	}
+
+	Ok(())
 }
 
-pub fn read_or_generate_uuid() -> Result<&'static Uuid> {
-    static UUID: OnceCell<Uuid> = OnceCell::new();
-    UUID.get_or_try_init(|| {
-        let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
-        let path = dirs.data_dir();
-        std::fs::create_dir_all(&path)?;
-        let uuid_path = path.join("uuid");
+async fn handle_request_job(conn: Connection, mut send: quinn::SendStream, tx: Sender<SQLiteCommand>) -> Result<()> {
+	let LocalJob { job_id, task_id, job, args } = commands::handle_dispatch(tx).await?;
 
-        if uuid_path.exists() {
-            let uuid = std::fs::read_to_string(uuid_path)?;
-            Ok(Uuid::parse_str(&uuid)?)
-        } else {
-            let uuid = Uuid::new_v4();
-            std::fs::write(uuid_path, uuid.to_string())?;
-            Ok(uuid)
-        }
-    })
-}
+	let mut out = File::open(&job.output).await?;
+	let mut s = conn.open_uni().await?;
 
-pub async fn handle_cli(conn: LocalSocketStream, tx: Sender<SQLiteCommand>) -> Result<()> {
-    let (mut reader, mut writer) = conn.into_split();
+	let mut streams = Vec::new();
+	let mut files = Vec::new();
 
-    let mut buf = [0u8; 4];
-    reader.read_exact(&mut buf).await?;
-    let len = u32::from_le_bytes(buf) as usize;
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).await?;
-    let cmd: CliToService = postcard::from_bytes(&buf)?;
-    let res = match cmd {
-        CliToService::SubmitJob { task, jobs } => commands::handle_submit(tx, task, jobs).await,
-    };
-    let vec =
-        postcard::to_allocvec(&res.unwrap_or_else(|e| ServiceToCli::Error { e: e.to_string() }))?;
-    let len = vec.len() as u32;
-    writer.write_all(&len.to_le_bytes()).await?;
-    writer.write_all(&vec).await?;
+	for input in job.inputs.iter() {
+		let f = File::open(input).await?;
+		let s = conn.open_uni().await?;
+		streams.push(s);
+		files.push(f);
+	}
 
-    Ok(())
+	let streamed_job = StreamedJob {
+		args,
+		output: s.id(),
+		inputs: streams.iter().map(|s| s.id()).collect(),
+	};
+
+	send.write_all(&postcard::to_allocvec(&streamed_job)?).await?;
+
+	let mut set = JoinSet::new();
+	set.spawn(async move {
+		copy_buf(&mut out, &mut s).await?;
+	});
+	for (mut f, mut s) in files.into_iter().zip(streams.into_iter()) {
+		set.spawn(async move {
+			copy_buf(&mut f, &mut s).await?;
+		});
+	}
+
+	Ok(())
 }

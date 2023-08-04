@@ -8,17 +8,17 @@ use sha2::{Digest, Sha256};
 use base64::engine::general_purpose;
 use base64::Engine;
 use crate::db::SQLiteCommand;
-use crate::server;
+use crate::{server, utils};
 use crate::server::commands::AdvertiseMessage;
 
 pub async fn loop_mqtt(
     tx: Sender<SQLiteCommand>,
     mut rx: Receiver<Option<AdvertiseMessage>>,
 ) -> anyhow::Result<()> {
-    let uuid = server::read_or_generate_uuid()?;
+    let uuid = utils::read_or_generate_uuid()?;
     let topic = gen_topic()?;
     let mut mqttoptions = MqttOptions::new(
-	    server::read_or_generate_uuid()?.to_string(),
+	    utils::read_or_generate_uuid()?.to_string(),
 	    "test.mosquitto.org",
 	    1883,
     );
@@ -77,7 +77,7 @@ pub async fn loop_mqtt(
 }
 
 fn gen_topic() -> anyhow::Result<String> {
-    let (cert, _) = server::read_or_generate_certs()?;
+    let (cert, _) = utils::read_or_generate_certs()?;
     let mut hasher = Sha256::new();
     hasher.update(&cert.0);
     let cert_hash = hasher.finalize();
