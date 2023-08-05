@@ -11,8 +11,11 @@ use quinn::{ClientConfig, Connection, Endpoint};
 use tokio::process::Command;
 use tokio::{sync::mpsc::Sender, time::sleep};
 use tokio::sync::mpsc::Receiver;
+use tokio::task::JoinSet;
 
 use crate::{cli::parse::Arg, db::SQLiteCommand, ipc::Job};
+use crate::inc::RequestMessage::RequestJob;
+use crate::inc::StreamedJob;
 use crate::server::commands::RunnableJob;
 use crate::utils::read_or_generate_certs;
 
@@ -101,7 +104,23 @@ async fn get_remote_job(endpoint: &Endpoint, msg: &AdvertiseMessage, pool: &Conn
 		}
 	};
 
+	let (mut send, mut recv)  = conn.open_bi().await?;
+	send.write_all(&postcard::to_allocvec(&RequestJob).unwrap()).await?;
+	send.finish().await?;
+	let job: Option<StreamedJob> = postcard::from_bytes(&recv.read_to_end(1_000_000).await?)?;
+	if let Some(job) = job {
+		run_remote_job(conn, job).await?;
+	} else {
+		todo!()
+	}
+
 	Ok(())
+}
+
+pub async fn run_remote_job(conn: Connection, job: StreamedJob) -> Result<()> {
+	let mut set = JoinSet::new();
+
+	let (mut send, mut recv) = conn.accept_bi().await?;
 }
 
 pub async fn make_endpoint() -> Result<Endpoint> {

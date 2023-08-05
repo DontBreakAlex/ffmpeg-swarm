@@ -18,7 +18,8 @@ pub fn do_acquire_job(conn: &mut Connection) -> Result<Option<RunnableJob>> {
         tx.prepare_cached("UPDATE jobs SET started_at = CURRENT_TIMESTAMP WHERE id = ?;")?;
     let mut get_peer = tx.prepare_cached("SELECT uuid, ips, oldest_job FROM known_peers ORDER BY oldest_job LIMIT 1;")?;
 
-	let local_job = get_job.query_row([], LocalJob::from_row).optional()?;
+	// let local_job = get_job.query_row([], LocalJob::from_row).optional()?;
+	let local_job = None::<LocalJob>;
 
 	if let Some(local_job) = local_job {
 		start_task.execute([local_job.task_id])?;

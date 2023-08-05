@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::{cli::parse::Arg, db::SQLiteCommand, ipc::Job};
 use anyhow::Result;
-use rusqlite::{Connection, Row};
+use rusqlite::{Connection, OptionalExtension, Row};
 use tokio::sync::mpsc::Sender;
 
 pub struct LocalJob {
@@ -28,7 +28,7 @@ impl LocalJob {
     }
 }
 
-pub async fn handle_dispatch(tx: Sender<SQLiteCommand>) -> Result<LocalJob> {
+pub async fn handle_dispatch(tx: Sender<SQLiteCommand>) -> Result<Option<LocalJob>> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
 
     tx.send(SQLiteCommand::Dispatch { reply: reply_tx }).await?;
@@ -38,7 +38,7 @@ pub async fn handle_dispatch(tx: Sender<SQLiteCommand>) -> Result<LocalJob> {
     Ok(job)
 }
 
-pub fn do_dispatch(conn: &mut Connection) -> Result<LocalJob> {
+pub fn do_dispatch(conn: &mut Connection) -> Result<Option<LocalJob>> {
     let tx = conn.transaction()?;
     let mut get_job = tx.prepare_cached("SELECT jobs.id, task_id, inputs, output, args FROM jobs INNER JOIN tasks t on t.id = jobs.task_id WHERE jobs.started_at IS NULL ORDER BY jobs.created_at LIMIT 1;")?;
     let mut start_task = tx.prepare_cached(
@@ -47,10 +47,12 @@ pub fn do_dispatch(conn: &mut Connection) -> Result<LocalJob> {
     let mut start_job =
         tx.prepare_cached("UPDATE jobs SET started_at = CURRENT_TIMESTAMP WHERE id = ?;")?;
 
-    let job = get_job.query_row([], LocalJob::from_row)?;
+    let job = get_job.query_row([], LocalJob::from_row).optional()?;
 
-    start_task.execute([job.task_id])?;
-    start_job.execute([job.job_id])?;
+	if let Some(job) = &job {
+		start_task.execute([job.task_id])?;
+		start_job.execute([job.job_id])?;
+	}
 
     drop((get_job, start_task, start_job));
 

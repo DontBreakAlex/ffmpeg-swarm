@@ -24,7 +24,7 @@ pub enum SQLiteCommand {
 		reply: oneshot::Sender<Result<u32>>,
 	},
 	Dispatch {
-		reply: oneshot::Sender<Result<LocalJob>>,
+		reply: oneshot::Sender<Result<Option<LocalJob>>>,
 	},
 	Complete {
 		job: u32,
@@ -72,7 +72,7 @@ async fn handle_cmd(
 			if reply.send(do_submit(conn, task, jobs)).is_err() {
 				eprintln!("Failed to send reply to submit command");
 			} else {
-				*jobs_available = true;
+				// *jobs_available = true;
 			}
 		}
 		SQLiteCommand::Dispatch { reply } => {
