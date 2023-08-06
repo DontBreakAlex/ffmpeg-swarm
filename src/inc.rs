@@ -10,4 +10,5 @@ pub enum RequestMessage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StreamedJob {
 	pub args: Vec<Arg>,
+	pub input_count: usize,
 }

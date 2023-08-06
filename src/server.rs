@@ -136,6 +136,7 @@ async fn handle_request_job(conn: Connection, mut send: quinn::SendStream, tx: S
 
 	let streamed_job = Some(StreamedJob {
 		args,
+		input_count: job.inputs.len(),
 	});
 
 	send.write_all(&postcard::to_allocvec(&streamed_job)?).await?;

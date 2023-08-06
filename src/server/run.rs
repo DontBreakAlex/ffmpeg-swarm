@@ -7,11 +7,17 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::RwLock;
 
 use anyhow::Result;
+use directories::ProjectDirs;
+use nix::sys::stat::Mode;
+use nix::unistd::mkfifo;
 use quinn::{ClientConfig, Connection, Endpoint};
 use tokio::process::Command;
-use tokio::{sync::mpsc::Sender, time::sleep};
+use tokio::{select, sync::mpsc::Sender, time::sleep};
+use tokio::fs::File;
+use tokio::io::copy;
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinSet;
+use uuid::Uuid;
 
 use crate::{cli::parse::Arg, db::SQLiteCommand, ipc::Job};
 use crate::inc::RequestMessage::RequestJob;
@@ -48,6 +54,7 @@ pub async fn run_job(tx: &Sender<SQLiteCommand>, job: LocalJob) -> Result<()> {
 
 	let args: Vec<_> = args
 		.into_iter()
+		.rev() // Where are poping inputs from the end
 		.map(|arg| match arg {
 			Arg::Input(_) => inputs
 				.pop()
@@ -109,7 +116,7 @@ async fn get_remote_job(endpoint: &Endpoint, msg: &AdvertiseMessage, pool: &Conn
 	send.finish().await?;
 	let job: Option<StreamedJob> = postcard::from_bytes(&recv.read_to_end(1_000_000).await?)?;
 	if let Some(job) = job {
-		run_remote_job(conn, job).await?;
+		run_remote_job(conn, job, msg.peer_id).await?;
 	} else {
 		todo!()
 	}
@@ -117,10 +124,76 @@ async fn get_remote_job(endpoint: &Endpoint, msg: &AdvertiseMessage, pool: &Conn
 	Ok(())
 }
 
-pub async fn run_remote_job(conn: Connection, job: StreamedJob) -> Result<()> {
+pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -> Result<()> {
+	let StreamedJob { args, input_count } = job;
+	let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
+	let runtime_dir = dirs.runtime_dir().unwrap();
 	let mut set = JoinSet::new();
 
-	let (mut send, mut recv) = conn.accept_bi().await?;
+	let (mut send, _) = conn.accept_bi().await?;
+	let output_path = runtime_dir.join(format!("output"));
+	mkfifo(&output_path, Mode::S_IRWXU)?;
+	let file = File::open(&output_path);
+	set.spawn(async move {
+		let mut file = file.await?;
+		copy(&mut file, &mut send).await?;
+		send.finish().await?;
+		Ok(())
+	});
+	let mut input_paths = Vec::new();
+	for i in 0..input_count {
+		let mut recv = conn.accept_uni().await?;
+		let input_path = runtime_dir.join(format!("input-{i}"));
+		mkfifo(&input_path, Mode::S_IRWXU)?;
+		let file = File::open(&output_path);
+		set.spawn(async move {
+			let mut file = file.await?;
+			copy(&mut recv, &mut file).await?;
+			Ok(())
+		});
+		input_paths.push(input_path);
+	}
+
+	// TODO Use OsString instead of PathBuf
+	let args: Vec<_> = args
+		.into_iter()
+		.rev() // Where are poping inputs from the end
+		.map(|arg| match arg {
+			Arg::Input(_) => input_paths
+				.pop()
+				.ok_or_else(|| anyhow::anyhow!("No input provided")),
+			Arg::Output => Ok(output_path),
+			Arg::Other(s) => Ok(s.into()),
+		})
+		.collect::<Result<Vec<PathBuf>, anyhow::Error>>()?;
+
+	println!("Running ffmpeg with args: {:?}", args);
+
+	let mut child = Command::new("ffmpeg")
+		.args(args)
+		.stdin(Stdio::null())
+		.spawn()?;
+
+	loop {
+		select! {
+			task = set.join_next() => {
+				task?
+			},
+			status = child.wait() => {
+				// do something
+				break;
+			}
+		}
+
+	}
+
+	while let Some(result) = set.join_next().await {
+		result??;
+	}
+
+	// println!("ffmpeg exited with status: {}", status)
+
+	Ok(())
 }
 
 pub async fn make_endpoint() -> Result<Endpoint> {
