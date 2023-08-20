@@ -42,9 +42,9 @@ pub async fn loop_mqtt(
                     Packet::Publish(p) => {
                         let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else { continue };
                         println!("Received = {:?}", msg);
-                        if msg.peer_id == *uuid {
-                            continue;
-                        }
+                        // if msg.peer_id == *uuid {
+                        //     continue;
+                        // }
                         if let Err(e) = _tx.send(SQLiteCommand::SavePeer { message: msg }).await {
                             eprintln!("Failed to save peer: {}", e);
                         }

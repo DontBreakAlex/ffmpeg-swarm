@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use anyhow::Result;
 use directories::ProjectDirs;
 use rusqlite::Connection;
@@ -12,7 +11,6 @@ use crate::server::commands::{do_acquire_job, do_advertise, RunnableJob};
 use crate::server::commands::do_save_peer;
 use crate::server::commands::AdvertiseMessage;
 use crate::{
-	cli::parse::Arg,
 	ipc::{Job, Task},
 	server::commands::{do_complete, do_dispatch, do_submit, LocalJob},
 };
@@ -43,7 +41,6 @@ pub async fn loop_db(
 ) -> Result<()> {
 	let mut conn = init()?;
 	let mut jobs_available = true;
-	println!("{:?}", advertise_tx);
 
 	loop {
 		select! {
@@ -129,6 +126,7 @@ pub fn init() -> Result<Connection> {
 	let path = dirs.data_dir();
 	std::fs::create_dir_all(&path)?;
 	let db_path = path.join("ffmpeg-swarm.db");
+	println!("Database running at: {}", db_path.display());
 	let conn = Connection::open(db_path)?;
 	conn.execute_batch(include_str!("./init.sql"))?;
 

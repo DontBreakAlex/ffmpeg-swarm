@@ -36,7 +36,11 @@ pub async fn loop_run(tx: Sender<SQLiteCommand>, mut run_rx: Receiver<RunnableJo
 	loop {
 		let job = run_rx.recv().await.expect("run_rx not to be dropped");
 		match job {
-			RunnableJob::Remote(msg) => {}
+			RunnableJob::Remote(msg) => {
+				// if let Err(e) = get_remote_job(&endpoint, &msg, &conn_pool).await {
+				// 	println!("Error getting remote job: {:?}", e);
+				// }
+			}
 			RunnableJob::Local(j) => {
 				if let Err(e) = run_job(&tx, j).await {
 					println!("Error running job: {:?}", e);
@@ -133,23 +137,23 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
 	let (mut send, _) = conn.accept_bi().await?;
 	let output_path = runtime_dir.join(format!("output"));
 	mkfifo(&output_path, Mode::S_IRWXU)?;
-	let file = File::open(&output_path);
+	let file = File::open(output_path.clone());
 	set.spawn(async move {
 		let mut file = file.await?;
 		copy(&mut file, &mut send).await?;
 		send.finish().await?;
-		Ok(())
+		Ok::<(), anyhow::Error>(())
 	});
 	let mut input_paths = Vec::new();
 	for i in 0..input_count {
 		let mut recv = conn.accept_uni().await?;
 		let input_path = runtime_dir.join(format!("input-{i}"));
 		mkfifo(&input_path, Mode::S_IRWXU)?;
-		let file = File::open(&output_path);
+		let file = File::open(output_path.clone());
 		set.spawn(async move {
 			let mut file = file.await?;
 			copy(&mut recv, &mut file).await?;
-			Ok(())
+			Ok::<(), anyhow::Error>(())
 		});
 		input_paths.push(input_path);
 	}
@@ -162,7 +166,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
 			Arg::Input(_) => input_paths
 				.pop()
 				.ok_or_else(|| anyhow::anyhow!("No input provided")),
-			Arg::Output => Ok(output_path),
+			Arg::Output => Ok(output_path.clone()),
 			Arg::Other(s) => Ok(s.into()),
 		})
 		.collect::<Result<Vec<PathBuf>, anyhow::Error>>()?;
@@ -173,14 +177,20 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
 		.args(args)
 		.stdin(Stdio::null())
 		.spawn()?;
+	let mut run = true;
 
 	loop {
 		select! {
-			task = set.join_next() => {
-				task?
+			task = set.join_next(), if run => {
+				if let Some(result) = task {
+					result??;
+				} else {
+					run = false;
+				}
 			},
 			status = child.wait() => {
 				// do something
+				println!("ffmpeg exited with status: {:?}", status);
 				break;
 			}
 		}
@@ -193,7 +203,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
 
 	// println!("ffmpeg exited with status: {}", status)
 
-	Ok(())
+	Ok::<(), anyhow::Error>(())
 }
 
 pub async fn make_endpoint() -> Result<Endpoint> {
