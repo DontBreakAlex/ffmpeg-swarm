@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{Connection, OptionalExtension};
 use serde_derive::{Deserialize, Serialize};
@@ -27,11 +27,17 @@ pub fn do_advertise(conn: &mut Connection) -> Result<Option<AdvertiseMessage>> {
 }
 
 impl AdvertiseMessage {
-	pub fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
-		Ok(Self {
-			oldest_job: row.get(2)?,
-			peer_ips: postcard::from_bytes(&row.get::<_, Vec<u8>>(1)?).map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Blob, Box::new(e)))?,
-			peer_id: row.get(0)?,
-		})
-	}
+    pub fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            oldest_job: row.get(2)?,
+            peer_ips: postcard::from_bytes(&row.get::<_, Vec<u8>>(1)?).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Blob,
+                    Box::new(e),
+                )
+            })?,
+            peer_id: row.get(0)?,
+        })
+    }
 }

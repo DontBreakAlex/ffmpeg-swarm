@@ -1,30 +1,30 @@
-use tokio::sync::mpsc::{Receiver, Sender};
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
-use std::time::Duration;
-use std::net::IpAddr;
-use local_ip_address::list_afinet_netifas;
-use tokio::time::timeout;
-use sha2::{Digest, Sha256};
+use crate::db::SQLiteCommand;
+use crate::server::commands::AdvertiseMessage;
+use crate::utils;
 use base64::engine::general_purpose;
 use base64::Engine;
-use crate::db::SQLiteCommand;
-use crate::{server, utils};
-use crate::server::commands::AdvertiseMessage;
+use local_ip_address::list_afinet_netifas;
+use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
+use sha2::{Digest, Sha256};
+use std::net::IpAddr;
+use std::time::Duration;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::time::timeout;
 
 pub async fn loop_mqtt(
     tx: Sender<SQLiteCommand>,
     mut rx: Receiver<Option<AdvertiseMessage>>,
 ) -> anyhow::Result<()> {
-    let uuid = utils::read_or_generate_uuid()?;
+    let _uuid = utils::read_or_generate_uuid()?;
     let topic = gen_topic()?;
     let mut mqttoptions = MqttOptions::new(
-	    utils::read_or_generate_uuid()?.to_string(),
-	    "test.mosquitto.org",
-	    1883,
+        utils::read_or_generate_uuid()?.to_string(),
+        "test.mosquitto.org",
+        1883,
     );
     mqttoptions.set_keep_alive(Duration::from_secs(30));
 
-    let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
     client.subscribe(&topic, QoS::AtLeastOnce).await.unwrap();
 
     let ips: Vec<IpAddr> = list_afinet_netifas()?
@@ -36,12 +36,12 @@ pub async fn loop_mqtt(
     let _tx = tx.clone();
     tokio::spawn(async move {
         while let Ok(notification) = eventloop.poll().await {
-            println!("Received = {:?}", notification);
+            // println!("Received = {:?}", notification);
             match notification {
                 Event::Incoming(packet) => match packet {
                     Packet::Publish(p) => {
                         let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else { continue };
-                        println!("Received = {:?}", msg);
+                        // println!("Received = {:?}", msg);
                         // if msg.peer_id == *uuid {
                         //     continue;
                         // }
@@ -70,7 +70,12 @@ pub async fn loop_mqtt(
         msg.peer_ips = ips.clone();
 
         client
-            .publish(&topic, QoS::AtLeastOnce, true, postcard::to_allocvec(&msg)?)
+            .publish(
+                &topic,
+                QoS::AtLeastOnce,
+                false,
+                postcard::to_allocvec(&msg)?,
+            )
             .await
             .unwrap();
     }

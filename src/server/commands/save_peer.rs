@@ -14,3 +14,10 @@ pub fn do_save_peer(conn: &mut Connection, msg: &AdvertiseMessage) -> Result<()>
 
     Ok(())
 }
+
+pub fn do_remove_peer(conn: &mut Connection, peer_id: uuid::Uuid) -> Result<()> {
+    let mut stmt = conn.prepare_cached("DELETE FROM known_peers WHERE uuid = ?;")?;
+    stmt.execute(params![peer_id])?;
+
+    Ok(())
+}

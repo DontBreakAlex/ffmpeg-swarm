@@ -2,18 +2,21 @@ mod ipc;
 pub mod parse;
 mod validation;
 
-use crate::{cli::{
-	parse::{FfmpegArgs, parse_ffmpeg_args},
-	validation::validate_files,
-}, ipc::{CliToService, Task}, server};
-use anyhow::Result;
-use ipc::send_command;
-use tokio::sync::mpsc::Sender;
-use interprocess::local_socket::tokio::{LocalSocketListener, LocalSocketStream};
-use futures_lite::{AsyncReadExt, AsyncWriteExt};
 use crate::db::SQLiteCommand;
 use crate::ipc::ServiceToCli;
 use crate::server::commands;
+use crate::{
+    cli::{
+        parse::{parse_ffmpeg_args, FfmpegArgs},
+        validation::validate_files,
+    },
+    ipc::{CliToService, Task},
+};
+use anyhow::Result;
+use futures_lite::{AsyncReadExt, AsyncWriteExt};
+use interprocess::local_socket::tokio::{LocalSocketListener, LocalSocketStream};
+use ipc::send_command;
+use tokio::sync::mpsc::Sender;
 
 pub fn submit(args: Vec<String>) -> Result<()> {
     let FfmpegArgs {
@@ -31,9 +34,9 @@ pub fn submit(args: Vec<String>) -> Result<()> {
 pub async fn loop_cli(tx: Sender<SQLiteCommand>) {
     let sock = {
         let name = {
+            use interprocess::local_socket::NameTypeSupport;
             use interprocess::local_socket::NameTypeSupport::*;
-	        use interprocess::local_socket::NameTypeSupport;
-	        match NameTypeSupport::ALWAYS_AVAILABLE {
+            match NameTypeSupport::ALWAYS_AVAILABLE {
                 OnlyPaths => "/tmp/ffmpeg-swarm.sock",
                 OnlyNamespaced | Both => "@ffmpeg-swarm.sock",
             }

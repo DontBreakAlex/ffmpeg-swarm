@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
-    success BOOLEAN,
+    exit_code INTEGER,
     FOREIGN KEY (task_id) REFERENCES tasks
 );
 

@@ -1,11 +1,11 @@
 mod cli;
 mod db;
+mod inc;
 mod ipc;
+mod mqtt;
 mod server;
 mod service;
-mod mqtt;
 mod utils;
-mod inc;
 
 use clap::{Parser, Subcommand};
 use service::{install_service, uninstall_service};

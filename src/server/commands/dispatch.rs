@@ -28,7 +28,7 @@ impl LocalJob {
     }
 }
 
-pub async fn handle_dispatch(tx: Sender<SQLiteCommand>) -> Result<Option<LocalJob>> {
+pub async fn handle_dispatch(tx: &Sender<SQLiteCommand>) -> Result<Option<LocalJob>> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
 
     tx.send(SQLiteCommand::Dispatch { reply: reply_tx }).await?;
@@ -49,10 +49,10 @@ pub fn do_dispatch(conn: &mut Connection) -> Result<Option<LocalJob>> {
 
     let job = get_job.query_row([], LocalJob::from_row).optional()?;
 
-	if let Some(job) = &job {
-		start_task.execute([job.task_id])?;
-		start_job.execute([job.job_id])?;
-	}
+    if let Some(job) = &job {
+        start_task.execute([job.task_id])?;
+        start_job.execute([job.job_id])?;
+    }
 
     drop((get_job, start_task, start_job));
 

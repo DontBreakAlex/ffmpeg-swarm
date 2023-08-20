@@ -3,7 +3,7 @@ use serde_derive::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Arg {
-    Input(u32),
+    Input,
     Output,
     Other(String),
 }
@@ -24,7 +24,6 @@ pub fn parse_ffmpeg_args(args: Vec<String>) -> Result<FfmpegArgs> {
         return Err(anyhow!("Unexpected command, got {}", ffmpeg));
     }
 
-    let mut file_index = 0;
     let mut input: Vec<String> = Vec::new();
     let mut output = String::new();
     let mut args: Vec<Arg> = Vec::new();
@@ -34,8 +33,7 @@ pub fn parse_ffmpeg_args(args: Vec<String>) -> Result<FfmpegArgs> {
             if let Some(i) = iter.next() {
                 input.push(i);
                 args.push(Arg::Other(arg));
-                args.push(Arg::Input(file_index));
-                file_index += 1;
+                args.push(Arg::Input);
             } else {
                 return Err(anyhow!("No input file specified after -i"));
             }

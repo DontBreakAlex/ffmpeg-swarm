@@ -1,7 +1,7 @@
-use rustls::{Certificate, PrivateKey};
 use directories::ProjectDirs;
-use uuid::Uuid;
 use once_cell::sync::OnceCell;
+use rustls::{Certificate, PrivateKey};
+use uuid::Uuid;
 
 pub fn read_or_generate_certs() -> anyhow::Result<(Certificate, PrivateKey)> {
     let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
