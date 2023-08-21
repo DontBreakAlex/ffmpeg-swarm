@@ -100,7 +100,11 @@ async fn get_remote_job(
     let conn = 'a: loop {
         if let Some(ip) = iter.next() {
             if let Some(conn) = pool.read().await.get(ip).cloned() {
-                break conn;
+	            if let Some(_) = conn.close_reason() {
+		            pool.write().await.remove(ip);
+	            } else {
+		            break conn;
+	            }
             }
         } else {
             let mut iter = msg.peer_ips.iter();
@@ -117,7 +121,6 @@ async fn get_remote_job(
                                 .await
                             {
                                 entry.insert(conn.clone());
-                                // TODO Remove conn on close
                                 break 'a conn;
                             }
                         }
