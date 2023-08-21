@@ -12,4 +12,6 @@ pub struct StreamedJob {
     pub args: Vec<Arg>,
     pub input_count: usize,
     pub extension: OsString,
+    /// high bits are job_id, low bits are task_id
+    pub stream_id: u64,
 }

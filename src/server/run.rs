@@ -12,7 +12,7 @@ use nix::sys::stat::Mode;
 use nix::unistd::mkfifo;
 use quinn::{ClientConfig, Connection, Endpoint};
 use tokio::fs::{remove_file, OpenOptions};
-use tokio::io::copy;
+use tokio::io::{AsyncWriteExt, copy};
 use tokio::process::Command;
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinSet;
@@ -38,7 +38,7 @@ pub async fn loop_run(tx: Sender<SQLiteCommand>, mut run_rx: Receiver<RunnableJo
         match job {
             RunnableJob::Remote(msg) => {
                 if let Err(e) = get_remote_job(&tx, &endpoint, &msg, &conn_pool).await {
-                	println!("Error getting remote job: {:?}", e);
+                    println!("Error getting remote job: {:?}", e);
                 }
                 // get_remote_job(&tx, &endpoint, &msg, &conn_pool)
                 //     .await
@@ -117,7 +117,7 @@ async fn get_remote_job(
                                 .await
                             {
                                 entry.insert(conn.clone());
-	                            // TODO Remove conn on close
+                                // TODO Remove conn on close
                                 break 'a conn;
                             }
                         }
@@ -153,6 +153,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
         args,
         input_count,
         extension,
+	    stream_id,
     } = job;
     let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
     let runtime_dir = dirs.runtime_dir().unwrap();
@@ -165,6 +166,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
     mkfifo(&output_path, Mode::S_IRWXU)?;
     let _output_path = output_path.clone();
     set.spawn(async move {
+	    send.write_u64(stream_id).await?;
         let mut file = OpenOptions::new().read(true).open(_output_path).await?;
         copy(&mut file, &mut send).await?;
         send.finish().await?;
@@ -224,8 +226,9 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
             status = child.wait() => {
                 println!("ffmpeg exited with status: {:?}", status);
                 let mut send = conn.open_uni().await?;
+	            send.write_u64(stream_id).await?;
                 send.write_all(&status.map(|e| e.code().unwrap_or(-1i32)).unwrap_or(-1i32).to_le_bytes()).await?;
-		        send.finish().await?;
+                send.finish().await?;
                 break;
             }
         }

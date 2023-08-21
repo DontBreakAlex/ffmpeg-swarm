@@ -13,9 +13,9 @@ use futures::TryFutureExt;
 use nix::sys::stat::Mode;
 use nix::unistd::mkdir;
 use quinn::{Connection, Endpoint, ServerConfig, TransportConfig};
+use std::fs::remove_dir_all;
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
-use std::fs::remove_dir_all;
 use tokio::fs::File;
 use tokio::io::copy;
 use tokio::sync::mpsc::{self, Sender};
@@ -26,7 +26,7 @@ const KEEP_ALIVE_SECS: u64 = 120;
 pub fn run() -> Result<()> {
     let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
     let runtime_dir = dirs.runtime_dir().unwrap();
-	_ = remove_dir_all(&runtime_dir);
+    _ = remove_dir_all(&runtime_dir);
     _ = mkdir(runtime_dir, Mode::S_IRWXU);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -119,7 +119,8 @@ async fn handle_request_job(
     mut send: quinn::SendStream,
     tx: Sender<SQLiteCommand>,
 ) -> Result<()> {
-    let Some(LocalJob { job_id, job, args, ..}) = commands::handle_dispatch(&tx).await? else {
+    println!("Conn id: {:?}", conn.stable_id());
+    let Some(LocalJob { job_id, task_id, job, args }) = commands::handle_dispatch(&tx).await? else {
 		send.write_all(&postcard::to_allocvec(&None::<StreamedJob>)?).await?;
 		send.finish().await?;
 		return Ok(());
@@ -131,6 +132,7 @@ async fn handle_request_job(
     // TODO: WILL fuck up when multiple clients are starting jobs at the same time
     set.spawn(async move {
         let mut r = _conn.accept_uni().await?;
+        println!("Conn id 2: {:?}", _conn.stable_id());
         println!("Receiving output");
         copy(&mut r, &mut out).await?;
         println!("Received output");
@@ -153,6 +155,7 @@ async fn handle_request_job(
         args,
         input_count: job.inputs.len(),
         extension: job.output.extension().unwrap().to_os_string(),
+	    stream_id: ((job_id as u64) << 32) | task_id as u64,
     });
 
     send.write_all(&postcard::to_allocvec(&streamed_job)?)
@@ -163,13 +166,15 @@ async fn handle_request_job(
         result??;
     }
 
-	let mut r = conn.accept_uni().await?;
-	let mut buf = [0u8; 4];
-	r.read_exact(&mut buf).await?;
-	let exit_code = i32::from_le_bytes(buf);
+    let mut r = conn.accept_uni().await?;
+    println!("Conn id 2: {:?}", conn.stable_id());
+    let mut buf = [0u8; 4];
+    r.read_exact(&mut buf).await?;
+    let exit_code = i32::from_le_bytes(buf);
 
-	println!("Exit code: {}", exit_code);
-	tx.send(SQLiteCommand::Complete { job_id, exit_code }).await?;
+    println!("Exit code: {}", exit_code);
+    tx.send(SQLiteCommand::Complete { job_id, exit_code })
+        .await?;
 
     Ok(())
 }
