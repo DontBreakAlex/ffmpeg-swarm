@@ -18,6 +18,7 @@ use std::vec;
 use std::{net::SocketAddr, time::Duration};
 use tokio::fs::File;
 use tokio::io::copy;
+use tokio::select;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::task::JoinSet;
 
@@ -75,18 +76,36 @@ async fn loop_quinn(tx: Sender<SQLiteCommand>) -> Result<()> {
         tokio::spawn(async move {
             match conn.await {
                 Ok(connection) => loop {
-                    match connection.accept_bi().await {
-                        Ok((send, recv)) => {
-                            let _tx = _tx.clone();
-                            let _conn = connection.clone();
-                            tokio::spawn(
-                                handle_bi(send, recv, _tx, _conn)
-                                    .inspect_err(|e| eprintln!("{:?}", e)),
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("{}", e);
-                            return;
+                    select! {
+                        biased;
+                        stream = connection.accept_bi() => {
+	                        match stream {
+	                            Ok((send, recv)) => {
+	                                let _tx = _tx.clone();
+	                                let _conn = connection.clone();
+	                                tokio::spawn(
+	                                    handle_bi(send, recv, _tx, _conn)
+	                                        .inspect_err(|e| eprintln!("{:?}", e)),
+	                                );
+	                            }
+	                            Err(e) => {
+	                                eprintln!("{}", e);
+	                                return;
+	                            }
+	                        }
+	                    }
+                        stream = connection.accept_uni() => match stream {
+                            Ok(mut recv) => {
+                                let mut buf = [0u8; 4];
+                                recv.read_exact(&mut buf).await.unwrap();
+                                let job_id = u32::from_le_bytes(buf);
+                                println!("Job id: {}", job_id);
+                                _tx.send(SQLiteCommand::Complete { job_id, exit_code: 0 }).await.unwrap();
+                            }
+                            Err(e) => {
+                                eprintln!("{}", e);
+                                return;
+                            }
                         }
                     }
                 },
@@ -155,7 +174,7 @@ async fn handle_request_job(
         args,
         input_count: job.inputs.len(),
         extension: job.output.extension().unwrap().to_os_string(),
-	    stream_id: ((job_id as u64) << 32) | task_id as u64,
+        stream_id: ((job_id as u64) << 32) | task_id as u64,
     });
 
     send.write_all(&postcard::to_allocvec(&streamed_job)?)
