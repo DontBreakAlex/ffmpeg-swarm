@@ -165,11 +165,10 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
     let mut send = conn.open_uni().await?;
     let mut output_path = runtime_dir.join(format!("output"));
     output_path.set_extension(extension);
-    println!("Output path: {:?}", output_path);
     mkfifo(&output_path, Mode::S_IRWXU)?;
     let _output_path = output_path.clone();
     set.spawn(async move {
-        send.write_u64(stream_id).await?;
+        send.write_u64_le(stream_id).await?;
         let mut file = OpenOptions::new().read(true).open(_output_path).await?;
         copy(&mut file, &mut send).await?;
         send.finish().await?;
@@ -211,10 +210,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
         .args(args)
         .stdin(Stdio::null())
         .spawn()?;
-    // let mut child = Command::new("cp")
-    // 	.args(["/run/user/1000/ffmpeg-swarm/input-0", "/run/user/1000/ffmpeg-swarm/output.mp4"])
-    // 	.stdin(Stdio::null())
-    // 	.spawn()?;
+
     let mut run = true;
 
     loop {
@@ -227,10 +223,9 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
                 }
             },
             status = child.wait() => {
-                println!("ffmpeg exited with status: {:?}", status);
                 let mut send = conn.open_uni().await?;
-                send.write_u64(stream_id).await?;
-                send.write_all(&status.map(|e| e.code().unwrap_or(-1i32)).unwrap_or(-1i32).to_le_bytes()).await?;
+                send.write_u64_le(stream_id).await?;
+                send.write_i32(status.map(|e| e.code().unwrap_or(-1i32)).unwrap_or(-1i32)).await?;
                 send.finish().await?;
                 break;
             }
