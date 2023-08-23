@@ -12,13 +12,21 @@ use directories::ProjectDirs;
 use futures::TryFutureExt;
 use nix::sys::stat::Mode;
 use nix::unistd::mkdir;
-use quinn::{Connection, Endpoint, ServerConfig, TransportConfig};
+use postage::dispatch;
+use postage::prelude::{Sink, Stream};
+use quinn::{Connection, Endpoint, RecvStream, ServerConfig, TransportConfig};
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::fs::remove_dir_all;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
 use tokio::fs::File;
 use tokio::io::copy;
+use tokio::io::AsyncReadExt;
 use tokio::select;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::task::JoinSet;
 
@@ -75,40 +83,42 @@ async fn loop_quinn(tx: Sender<SQLiteCommand>) -> Result<()> {
         let _tx = tx.clone();
         tokio::spawn(async move {
             match conn.await {
-                Ok(connection) => loop {
-                    select! {
-                        biased;
-                        stream = connection.accept_bi() => {
-	                        match stream {
-	                            Ok((send, recv)) => {
-	                                let _tx = _tx.clone();
-	                                let _conn = connection.clone();
-	                                tokio::spawn(
-	                                    handle_bi(send, recv, _tx, _conn)
-	                                        .inspect_err(|e| eprintln!("{:?}", e)),
-	                                );
-	                            }
-	                            Err(e) => {
-	                                eprintln!("{}", e);
-	                                return;
-	                            }
-	                        }
-	                    }
-                        stream = connection.accept_uni() => match stream {
-                            Ok(mut recv) => {
-                                let mut buf = [0u8; 4];
-                                recv.read_exact(&mut buf).await.unwrap();
-                                let job_id = u32::from_le_bytes(buf);
-                                println!("Job id: {}", job_id);
-                                _tx.send(SQLiteCommand::Complete { job_id, exit_code: 0 }).await.unwrap();
+                Ok(connection) => {
+                    let (mut stream_tx, _) = dispatch::channel(16);
+                    loop {
+                        select! {
+                            biased;
+                            stream = connection.accept_bi() => {
+                                match stream {
+                                    Ok((send, recv)) => {
+                                        let _tx = _tx.clone();
+                                        let _conn = connection.clone();
+                                        tokio::spawn(
+                                            handle_bi(send, recv, _tx, _conn, stream_tx.subscribe())
+                                                .inspect_err(|e| eprintln!("{:?}", e)),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        eprintln!("{}", e);
+                                        return;
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                eprintln!("{}", e);
-                                return;
+                            stream = connection.accept_uni() => match stream {
+                                Ok(mut recv) => {
+                                    let Ok(stream_id) = recv.read_u64().await else { return };
+                                    if let Err(e) = stream_tx.send((stream_id, recv)).await {
+                                        eprintln!("Error sending stream: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("{}", e);
+                                    return;
+                                }
                             }
                         }
                     }
-                },
+                }
                 Err(e) => eprintln!("{}", e),
             }
         });
@@ -119,15 +129,16 @@ async fn loop_quinn(tx: Sender<SQLiteCommand>) -> Result<()> {
 
 async fn handle_bi(
     send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    mut recv: RecvStream,
     tx: Sender<SQLiteCommand>,
     conn: Connection,
+    stream_rx: dispatch::Receiver<(u64, RecvStream)>,
 ) -> Result<()> {
     let vec = recv.read_to_end(1_000_000).await?;
     let msg: RequestMessage = postcard::from_bytes(&vec)?;
 
     match msg {
-        RequestMessage::RequestJob => handle_request_job(conn, send, tx).await?,
+        RequestMessage::RequestJob => handle_request_job(conn, send, tx, stream_rx).await?,
     }
 
     Ok(())
@@ -137,6 +148,7 @@ async fn handle_request_job(
     conn: Connection,
     mut send: quinn::SendStream,
     tx: Sender<SQLiteCommand>,
+    mut stream_rx: dispatch::Receiver<(u64, RecvStream)>,
 ) -> Result<()> {
     println!("Conn id: {:?}", conn.stable_id());
     let Some(LocalJob { job_id, task_id, job, args }) = commands::handle_dispatch(&tx).await? else {
@@ -144,21 +156,15 @@ async fn handle_request_job(
 		send.finish().await?;
 		return Ok(());
 	};
+    let stream_id = ((job_id as u64) << 32) | task_id as u64;
 
     let mut set = JoinSet::new();
-    let mut out = File::create(&job.output).await?;
+    let out = File::create(&job.output).await?;
     let _conn = conn.clone();
     // TODO: WILL fuck up when multiple clients are starting jobs at the same time
-    set.spawn(async move {
-        let mut r = _conn.accept_uni().await?;
-        println!("Conn id 2: {:?}", _conn.stable_id());
-        println!("Receiving output");
-        copy(&mut r, &mut out).await?;
-        println!("Received output");
-        Ok::<(), tokio::io::Error>(())
-    });
+    set.spawn(receive_output(out, stream_rx.clone(), stream_id));
 
-    // TODO: Make sure that this actually works when there are multiple inputs
+    // TODO: Make sure that this actually works when there are multiple inputs (probably not)
     for (i, input) in job.inputs.iter().enumerate() {
         let mut f = File::open(input).await?;
         let mut s = conn.open_uni().await?;
@@ -174,7 +180,7 @@ async fn handle_request_job(
         args,
         input_count: job.inputs.len(),
         extension: job.output.extension().unwrap().to_os_string(),
-        stream_id: ((job_id as u64) << 32) | task_id as u64,
+        stream_id,
     });
 
     send.write_all(&postcard::to_allocvec(&streamed_job)?)
@@ -195,5 +201,19 @@ async fn handle_request_job(
     tx.send(SQLiteCommand::Complete { job_id, exit_code })
         .await?;
 
+    Ok(())
+}
+
+async fn receive_output(
+    mut file: File,
+    mut stream_rx: dispatch::Receiver<(u64, RecvStream)>,
+    stream_id: u64,
+) -> Result<()> {
+    let (_, mut stream) = stream_rx
+        .find(|(id, _)| *id == stream_id)
+        .recv()
+        .await
+        .unwrap();
+    copy(&mut stream, &mut file).await?;
     Ok(())
 }
