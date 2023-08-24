@@ -1,6 +1,9 @@
+use base64::engine::general_purpose::STANDARD_NO_PAD;
+use base64::Engine;
 use directories::ProjectDirs;
 use once_cell::sync::OnceCell;
 use rustls::{Certificate, PrivateKey};
+use serde_derive::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub fn read_or_generate_certs() -> anyhow::Result<(Certificate, PrivateKey)> {
@@ -41,4 +44,22 @@ pub fn read_or_generate_uuid() -> anyhow::Result<&'static Uuid> {
             Ok(uuid)
         }
     })
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Config {
+    cert: Vec<u8>,
+    key: Vec<u8>,
+}
+pub fn serialize_config() -> anyhow::Result<String> {
+    let (cert, key) = read_or_generate_certs()?;
+    let config = Config {
+        cert: cert.0,
+        key: key.0,
+    };
+    let bin = postcard::to_allocvec(&config)?;
+    let mut result = Vec::new();
+    zstd::stream::copy_encode(bin.as_slice(), &mut result, 22)?;
+
+    Ok(STANDARD_NO_PAD.encode(&result))
 }

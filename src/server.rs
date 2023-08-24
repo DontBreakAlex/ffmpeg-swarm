@@ -15,9 +15,9 @@ use nix::sys::stat::Mode;
 use nix::unistd::mkdir;
 use quinn::{Connection, Endpoint, RecvStream, ServerConfig, TransportConfig};
 
-
 use std::fs::remove_dir_all;
 
+use crate::utils::serialize_config;
 use std::sync::Arc;
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
@@ -151,11 +151,18 @@ async fn handle_request_job(
     stream_rx: broadcast::Receiver<(u64, Arc<AtomicTake<RecvStream>>)>,
 ) -> Result<()> {
     println!("Conn id: {:?}", conn.stable_id());
-    let Some(LocalJob { job_id, task_id, job, args }) = commands::handle_dispatch(&tx).await? else {
-		send.write_all(&postcard::to_allocvec(&None::<StreamedJob>)?).await?;
-		send.finish().await?;
-		return Ok(());
-	};
+    let Some(LocalJob {
+        job_id,
+        task_id,
+        job,
+        args,
+    }) = commands::handle_dispatch(&tx).await?
+    else {
+        send.write_all(&postcard::to_allocvec(&None::<StreamedJob>)?)
+            .await?;
+        send.finish().await?;
+        return Ok(());
+    };
     let stream_id = ((job_id as u64) << 32) | task_id as u64;
 
     let mut set: JoinSet<Result<()>> = JoinSet::new();

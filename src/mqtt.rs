@@ -36,11 +36,12 @@ pub async fn loop_mqtt(
     let _tx = tx.clone();
     tokio::spawn(async move {
         while let Ok(notification) = eventloop.poll().await {
-            // println!("Received = {:?}", notification);
             match notification {
                 Event::Incoming(packet) => match packet {
                     Packet::Publish(p) => {
-                        let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else { continue };
+                        let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else {
+                            continue;
+                        };
                         // println!("Received = {:?}", msg);
                         // if msg.peer_id == *uuid {
                         //     continue;
