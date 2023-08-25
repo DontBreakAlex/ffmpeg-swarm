@@ -1,4 +1,5 @@
 mod cli;
+mod config;
 mod db;
 mod inc;
 mod ipc;
@@ -7,6 +8,7 @@ mod server;
 mod service;
 mod utils;
 
+use crate::config::{generate_config, serialize_config, write_serialized_config};
 use clap::{Parser, Subcommand};
 use service::{install_service, uninstall_service};
 
@@ -23,6 +25,9 @@ enum Commands {
     Install,
     Uninstall,
     Submit { args: Vec<String> },
+    Configure,
+    ShowToken,
+    Join { token: String },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -37,6 +42,9 @@ fn main() -> anyhow::Result<()> {
             cli::submit(args)?;
         }
         Commands::Server => server::run()?,
+        Commands::Configure => generate_config()?,
+        Commands::ShowToken => println!("{}", serialize_config()?),
+        Commands::Join { token } => write_serialized_config(token)?,
     }
 
     Ok(())

@@ -1,10 +1,11 @@
 use crate::cli::parse::Arg;
 use serde_derive::{Deserialize, Serialize};
 use std::ffi::OsString;
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RequestMessage {
-    RequestJob,
+    RequestJob { requester_uuid: Uuid },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

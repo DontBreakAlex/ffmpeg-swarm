@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
     exit_code INTEGER,
+    completed_by BLOB,
     FOREIGN KEY (task_id) REFERENCES tasks
 );
 

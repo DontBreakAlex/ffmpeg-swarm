@@ -5,7 +5,7 @@ use crate::db::{loop_db, SQLiteCommand};
 use crate::inc::{RequestMessage, StreamedJob};
 use crate::server::commands::LocalJob;
 use crate::server::run::loop_run;
-use crate::{cli, mqtt, utils};
+use crate::{cli, mqtt};
 use anyhow::anyhow;
 use anyhow::Result;
 use atomic_take::AtomicTake;
@@ -17,7 +17,7 @@ use quinn::{Connection, Endpoint, RecvStream, ServerConfig, TransportConfig};
 
 use std::fs::remove_dir_all;
 
-use crate::utils::serialize_config;
+use crate::config::read_config;
 use std::sync::Arc;
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
@@ -28,6 +28,7 @@ use tokio::select;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::task::JoinSet;
+use uuid::Uuid;
 
 const KEEP_ALIVE_SECS: u64 = 120;
 
@@ -68,12 +69,12 @@ pub fn run() -> Result<()> {
 }
 
 async fn loop_quinn(tx: Sender<SQLiteCommand>) -> Result<()> {
-    let (cert, key) = utils::read_or_generate_certs().unwrap();
-
+    let config = read_config();
     let mut transport = TransportConfig::default();
     transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
     transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECS - 10).try_into()?));
-    let mut server_config = ServerConfig::with_single_cert(vec![cert], key)?;
+    let mut server_config =
+        ServerConfig::with_single_cert(vec![config.cert.clone()], config.key.clone())?;
     server_config.transport_config(transport.into());
 
     let endpoint = Endpoint::server(server_config, "0.0.0.0:9753".parse::<SocketAddr>().unwrap())?;
@@ -138,7 +139,9 @@ async fn handle_bi(
     let msg: RequestMessage = postcard::from_bytes(&vec)?;
 
     match msg {
-        RequestMessage::RequestJob => handle_request_job(conn, send, tx, stream_rx).await?,
+        RequestMessage::RequestJob { requester_uuid } => {
+            handle_request_job(conn, send, tx, stream_rx, requester_uuid).await?
+        }
     }
 
     Ok(())
@@ -149,8 +152,8 @@ async fn handle_request_job(
     mut send: quinn::SendStream,
     tx: Sender<SQLiteCommand>,
     stream_rx: broadcast::Receiver<(u64, Arc<AtomicTake<RecvStream>>)>,
+    requester_uuid: Uuid,
 ) -> Result<()> {
-    println!("Conn id: {:?}", conn.stable_id());
     let Some(LocalJob {
         job_id,
         task_id,
@@ -172,13 +175,11 @@ async fn handle_request_job(
     set.spawn(receive_output(out, stream_rx, stream_id));
 
     // TODO: Make sure that this actually works when there are multiple inputs (probably not)
-    for (i, input) in job.inputs.iter().enumerate() {
+    for input in job.inputs.iter() {
         let mut f = File::open(input).await?;
         let mut s = conn.open_uni().await?;
         set.spawn(async move {
-            println!("Sending input {i}");
             copy(&mut f, &mut s).await?;
-            println!("Sent input {i}");
             Ok(())
         });
     }
@@ -202,8 +203,12 @@ async fn handle_request_job(
 
     println!("Job {job_id} from task {task_id} exited with code {exit_code}");
 
-    tx.send(SQLiteCommand::Complete { job_id, exit_code })
-        .await?;
+    tx.send(SQLiteCommand::Complete {
+        job_id,
+        exit_code,
+        completed_by: requester_uuid,
+    })
+    .await?;
 
     Ok(())
 }

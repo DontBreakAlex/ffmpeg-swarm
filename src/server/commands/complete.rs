@@ -1,11 +1,17 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use uuid::Uuid;
 
-pub fn do_complete(conn: &mut Connection, job: u32, exit_code: i32) -> Result<()> {
+pub fn do_complete(
+    conn: &mut Connection,
+    job: u32,
+    exit_code: i32,
+    completed_by: Uuid,
+) -> Result<()> {
     let mut stmt = conn.prepare_cached(
-        "UPDATE jobs SET exit_code = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+        "UPDATE jobs SET exit_code = ?, finished_at = CURRENT_TIMESTAMP, completed_by = ? WHERE id = ?",
     )?;
-    stmt.execute(params![exit_code, job])?;
+    stmt.execute(params![exit_code, completed_by, job])?;
 
     // TODO Write finished_at to task if all jobs are finished
 

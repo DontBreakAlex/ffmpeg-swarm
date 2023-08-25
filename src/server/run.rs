@@ -19,10 +19,11 @@ use tokio::task::JoinSet;
 use tokio::{select, sync::mpsc::Sender};
 use uuid::Uuid;
 
+use crate::config::read_config;
 use crate::inc::RequestMessage::RequestJob;
 use crate::inc::StreamedJob;
 use crate::server::commands::RunnableJob;
-use crate::utils::read_or_generate_certs;
+use crate::utils::read_or_generate_uuid;
 use crate::{cli::parse::Arg, db::SQLiteCommand, ipc::Job};
 
 use super::commands::{AdvertiseMessage, LocalJob};
@@ -32,12 +33,13 @@ type ConnectionPool = RwLock<HashMap<IpAddr, Connection>>;
 pub async fn loop_run(tx: Sender<SQLiteCommand>, mut run_rx: Receiver<RunnableJob>) -> Result<()> {
     let endpoint = make_endpoint().await?;
     let conn_pool = ConnectionPool::default();
+    let uuid = read_or_generate_uuid()?;
 
     loop {
         let job = run_rx.recv().await.expect("run_rx not to be dropped");
         match job {
             RunnableJob::Remote(msg) => {
-                if let Err(e) = get_remote_job(&tx, &endpoint, &msg, &conn_pool).await {
+                if let Err(e) = get_remote_job(&tx, &endpoint, &msg, &conn_pool, *uuid).await {
                     println!("Error getting remote job: {:?}", e);
                 }
                 // get_remote_job(&tx, &endpoint, &msg, &conn_pool)
@@ -84,6 +86,7 @@ pub async fn run_job(tx: &Sender<SQLiteCommand>, job: LocalJob) -> Result<()> {
     tx.send(SQLiteCommand::Complete {
         job_id,
         exit_code: status.code().unwrap_or(-1),
+        completed_by: Uuid::nil(),
     })
     .await?;
 
@@ -95,6 +98,7 @@ async fn get_remote_job(
     endpoint: &Endpoint,
     msg: &AdvertiseMessage,
     pool: &ConnectionPool,
+    uuid: Uuid,
 ) -> Result<()> {
     let mut iter = msg.peer_ips.iter();
     let conn = 'a: loop {
@@ -116,9 +120,8 @@ async fn get_remote_job(
                             break 'a c.get().clone();
                         }
                         Entry::Vacant(entry) => {
-                            if let Ok(conn) = endpoint
-                                .connect(SocketAddr::new(*ip, 9753), "localhost")?
-                                .await
+                            if let Ok(conn) =
+                                endpoint.connect(SocketAddr::new(*ip, 9753), "swarm")?.await
                             {
                                 entry.insert(conn.clone());
                                 break 'a conn;
@@ -134,8 +137,13 @@ async fn get_remote_job(
 
     println!("Connected to peer: {:?}", conn.remote_address());
     let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(&postcard::to_allocvec(&RequestJob).unwrap())
-        .await?;
+    send.write_all(
+        &postcard::to_allocvec(&RequestJob {
+            requester_uuid: uuid,
+        })
+        .unwrap(),
+    )
+    .await?;
     send.finish().await?;
     let job: Option<StreamedJob> = postcard::from_bytes(&recv.read_to_end(1_000_000).await?)?;
     if let Some(job) = job {
@@ -246,7 +254,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
 
 pub async fn make_endpoint() -> Result<Endpoint> {
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
-    let (cert, _) = read_or_generate_certs()?;
+    let cert = read_config().cert.clone();
     let mut certs = rustls::RootCertStore::empty();
     certs.add(&cert)?;
     let client_config = ClientConfig::with_root_certificates(certs);

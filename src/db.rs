@@ -26,6 +26,7 @@ pub enum SQLiteCommand {
     Complete {
         job_id: u32,
         exit_code: i32,
+        completed_by: Uuid,
     },
     Advertise,
     SavePeer {
@@ -80,8 +81,12 @@ async fn handle_cmd(
                 eprintln!("Failed to send reply to dispatch command");
             }
         }
-        SQLiteCommand::Complete { job_id, exit_code } => {
-            do_complete(conn, job_id, exit_code)?;
+        SQLiteCommand::Complete {
+            job_id,
+            exit_code,
+            completed_by,
+        } => {
+            do_complete(conn, job_id, exit_code, completed_by)?;
         }
         SQLiteCommand::Advertise => {
             if advertise_tx.send(do_advertise(conn)?).await.is_err() {

@@ -1,3 +1,4 @@
+use crate::config::read_config;
 use crate::db::SQLiteCommand;
 use crate::server::commands::AdvertiseMessage;
 use crate::utils;
@@ -15,11 +16,11 @@ pub async fn loop_mqtt(
     tx: Sender<SQLiteCommand>,
     mut rx: Receiver<Option<AdvertiseMessage>>,
 ) -> anyhow::Result<()> {
-    let _uuid = utils::read_or_generate_uuid()?;
+    let uuid = utils::read_or_generate_uuid()?;
     let topic = gen_topic()?;
     let mut mqttoptions = MqttOptions::new(
         utils::read_or_generate_uuid()?.to_string(),
-        "test.mosquitto.org",
+        read_config().mqtt.clone(),
         1883,
     );
     mqttoptions.set_keep_alive(Duration::from_secs(30));
@@ -29,7 +30,7 @@ pub async fn loop_mqtt(
 
     let ips: Vec<IpAddr> = list_afinet_netifas()?
         .into_iter()
-        .filter(|(_, ip)| !ip.is_loopback())
+        .filter(|(_, ip)| !ip.is_loopback() && ip.is_ipv4())
         .map(|i| i.1)
         .collect();
 
@@ -42,10 +43,9 @@ pub async fn loop_mqtt(
                         let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else {
                             continue;
                         };
-                        // println!("Received = {:?}", msg);
-                        // if msg.peer_id == *uuid {
-                        //     continue;
-                        // }
+                        if msg.peer_id == *uuid {
+                            continue;
+                        }
                         if let Err(e) = _tx.send(SQLiteCommand::SavePeer { message: msg }).await {
                             eprintln!("Failed to save peer: {}", e);
                         }
@@ -83,7 +83,7 @@ pub async fn loop_mqtt(
 }
 
 fn gen_topic() -> anyhow::Result<String> {
-    let (cert, _) = utils::read_or_generate_certs()?;
+    let cert = &read_config().cert;
     let mut hasher = Sha256::new();
     hasher.update(&cert.0);
     let cert_hash = hasher.finalize();
