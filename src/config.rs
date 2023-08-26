@@ -50,6 +50,7 @@ pub fn write_serialized_config(token: String) -> anyhow::Result<()> {
         .ok_or(anyhow!("Failed to get project dirs"))?;
     let path = dirs.data_dir();
     let path = path.join("config");
+	std::fs::create_dir_all(&path.parent().unwrap())?;
     std::fs::write(path, postcard::to_allocvec(&config)?)?;
 
     Ok(())
