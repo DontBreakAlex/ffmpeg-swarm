@@ -23,10 +23,12 @@ pub struct Job {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CliToService {
     SubmitJob { task: Task, jobs: Vec<Job> },
+    SetNumjobs { numjobs: usize },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ServiceToCli {
     Error { e: String },
     TaskCreated { id: u32 },
+    Ok,
 }

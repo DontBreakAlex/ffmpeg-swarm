@@ -5,12 +5,14 @@ use std::collections::HashMap;
 use std::env;
 use std::net::{IpAddr, SocketAddr};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::sync::{oneshot, RwLock};
 
 use anyhow::Result;
 use nix::sys::stat::Mode;
 use nix::unistd::mkfifo;
-use quinn::{ClientConfig, Connection, Endpoint};
+use quinn::{ClientConfig, Connection, Endpoint, TransportConfig};
 use tokio::fs::{create_dir_all, remove_file, File, OpenOptions};
 use tokio::io::{copy, AsyncWriteExt};
 use tokio::process::Command;
@@ -23,12 +25,15 @@ use crate::config::read_config;
 use crate::inc::RequestMessage::RequestJob;
 use crate::inc::StreamedJob;
 use crate::server::commands::RunnableJob;
+use crate::server::KEEP_ALIVE_SECS;
 use crate::utils::{read_or_generate_uuid, runtime_dir};
 use crate::{cli::parse::Arg, db::SQLiteCommand, ipc::Job};
 
 use super::commands::{AdvertiseMessage, LocalJob};
 
 type ConnectionPool = RwLock<HashMap<IpAddr, Connection>>;
+
+pub static NUM_THREADS: AtomicUsize = AtomicUsize::new(1);
 
 pub async fn loop_run(
     tx: Sender<SQLiteCommand>,
@@ -39,12 +44,12 @@ pub async fn loop_run(
     let uuid = read_or_generate_uuid()?;
     let mut set = JoinSet::new();
 
+    if let Ok(Ok(i)) = env::var("NUM_THREADS").map(|s| s.parse()) {
+        NUM_THREADS.store(i, Ordering::Relaxed)
+    }
+
     loop {
-        while set.len()
-            >= env::var("NUM_THREADS")
-                .map(|s| s.parse().unwrap_or(1))
-                .unwrap_or(1)
-        {
+        while set.len() >= NUM_THREADS.load(Ordering::Relaxed) {
             set.join_next().await;
         }
 
@@ -301,7 +306,11 @@ pub async fn make_endpoint() -> Result<Endpoint> {
     let cert = read_config().cert.clone();
     let mut certs = rustls::RootCertStore::empty();
     certs.add(&cert)?;
-    let client_config = ClientConfig::with_root_certificates(certs);
+    let mut client_config = ClientConfig::with_root_certificates(certs);
+    let mut transport = TransportConfig::default();
+    transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
+    transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECS - 10).try_into()?));
+    client_config.transport_config(transport.into());
     endpoint.set_default_client_config(client_config);
 
     Ok(endpoint)

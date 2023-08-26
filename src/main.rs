@@ -8,6 +8,7 @@ mod server;
 mod service;
 mod utils;
 
+use crate::cli::set_numjobs;
 use crate::config::{generate_config, serialize_config, write_serialized_config};
 use clap::{Parser, Subcommand};
 use service::{install_service, uninstall_service};
@@ -28,6 +29,8 @@ enum Commands {
     Configure,
     ShowToken,
     Join { token: String },
+    SetNumjobs { numjobs: usize },
+    Stop,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -45,6 +48,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Configure => generate_config()?,
         Commands::ShowToken => println!("{}", serialize_config()?),
         Commands::Join { token } => write_serialized_config(token)?,
+        Commands::SetNumjobs { numjobs } => set_numjobs(numjobs)?,
+        Commands::Stop => set_numjobs(0)?,
     }
 
     Ok(())

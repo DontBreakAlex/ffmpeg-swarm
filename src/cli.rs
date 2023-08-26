@@ -5,6 +5,7 @@ mod validation;
 use crate::db::SQLiteCommand;
 use crate::ipc::ServiceToCli;
 use crate::server::commands;
+use crate::server::run::NUM_THREADS;
 use crate::{
     cli::{
         parse::{parse_ffmpeg_args, FfmpegArgs},
@@ -16,6 +17,7 @@ use anyhow::Result;
 use futures_lite::{AsyncReadExt, AsyncWriteExt};
 use interprocess::local_socket::tokio::{LocalSocketListener, LocalSocketStream};
 use ipc::send_command;
+use std::sync::atomic::Ordering;
 use tokio::sync::mpsc::Sender;
 
 pub fn submit(args: Vec<String>) -> Result<()> {
@@ -27,6 +29,12 @@ pub fn submit(args: Vec<String>) -> Result<()> {
     let task = Task { args };
     let jobs = validate_files(input, output)?;
     let res = send_command(CliToService::SubmitJob { task, jobs })?;
+    println!("{:?} ---", res);
+    Ok(())
+}
+
+pub fn set_numjobs(numjobs: usize) -> Result<()> {
+    let res = send_command(CliToService::SetNumjobs { numjobs })?;
     println!("{:?} ---", res);
     Ok(())
 }
@@ -73,6 +81,10 @@ pub async fn handle_cli(conn: LocalSocketStream, tx: Sender<SQLiteCommand>) -> R
     let cmd: CliToService = postcard::from_bytes(&buf)?;
     let res = match cmd {
         CliToService::SubmitJob { task, jobs } => commands::handle_submit(tx, task, jobs).await,
+        CliToService::SetNumjobs { numjobs } => {
+            NUM_THREADS.store(numjobs, Ordering::Relaxed);
+            Ok(ServiceToCli::Ok)
+        }
     };
     let vec =
         postcard::to_allocvec(&res.unwrap_or_else(|e| ServiceToCli::Error { e: e.to_string() }))?;
