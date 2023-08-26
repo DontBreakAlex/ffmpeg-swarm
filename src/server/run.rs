@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::env;
 use std::net::{IpAddr, SocketAddr};
 use std::process::Stdio;
 use tokio::sync::{oneshot, RwLock};
@@ -37,28 +38,41 @@ pub async fn loop_run(
     let endpoint = make_endpoint().await?;
     let conn_pool = ConnectionPool::default();
     let uuid = read_or_generate_uuid()?;
+    let mut set = JoinSet::new();
 
     loop {
+        while set.len()
+            >= env::var("NUM_THREADS")
+                .map(|s| s.parse().unwrap_or(1))
+                .unwrap_or(1)
+        {
+            set.join_next().await;
+        }
+
         let (s, r) = oneshot::channel();
         job_request_tx.send(s).await?;
         let Ok(job) = r.await else {
             println!("No job available");
             continue;
         };
+
         match job {
             RunnableJob::Remote(msg) => {
-                if let Err(e) = get_remote_job(&tx, &endpoint, &msg, &conn_pool, *uuid).await {
+                let peer_id = msg.peer_id;
+                if let Err(e) =
+                    get_remote_job(&tx, &endpoint, msg, &conn_pool, *uuid, &mut set).await
+                {
                     println!("Error getting remote job: {:?}", e);
-                    tx.send(SQLiteCommand::RemovePeer {
-                        peer_id: msg.peer_id,
-                    })
-                    .await?;
+                    tx.send(SQLiteCommand::RemovePeer { peer_id }).await?;
                 }
             }
             RunnableJob::Local(j) => {
-                if let Err(e) = run_job(&tx, j).await {
-                    println!("Error running job: {:?}", e);
-                }
+                let tx = tx.clone();
+                set.spawn(async move {
+                    if let Err(e) = run_job(&tx, j).await {
+                        println!("Error running job: {:?}", e);
+                    }
+                });
             }
         }
     }
@@ -107,9 +121,10 @@ pub async fn run_job(tx: &Sender<SQLiteCommand>, job: LocalJob) -> Result<()> {
 async fn get_remote_job(
     tx: &Sender<SQLiteCommand>,
     endpoint: &Endpoint,
-    msg: &AdvertiseMessage,
+    msg: AdvertiseMessage,
     pool: &ConnectionPool,
     uuid: Uuid,
+    set: &mut JoinSet<()>,
 ) -> Result<()> {
     let mut iter = msg.peer_ips.iter();
     let conn = 'a: loop {
@@ -159,7 +174,11 @@ async fn get_remote_job(
     send.finish().await?;
     let job: Option<StreamedJob> = postcard::from_bytes(&recv.read_to_end(1_000_000).await?)?;
     if let Some(job) = job {
-        run_remote_job(conn, job, msg.peer_id).await?;
+        set.spawn(async move {
+            if let Err(e) = run_remote_job(conn, job, msg.peer_id).await {
+                println!("Error running remote job: {:?}", e);
+            }
+        });
     } else {
         tx.send(SQLiteCommand::RemovePeer {
             peer_id: msg.peer_id,
@@ -171,7 +190,7 @@ async fn get_remote_job(
     Ok(())
 }
 
-pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) -> Result<()> {
+pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -> Result<()> {
     let StreamedJob {
         args,
         input_count,
@@ -183,7 +202,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
     let mut set = JoinSet::new();
 
     let mut send = conn.open_uni().await?;
-    let mut output_path = runtime_dir.join(format!("output"));
+    let mut output_path = runtime_dir.join(format!("{peer_id}-{stream_id}-output"));
     output_path.set_extension(extension);
     remove_file(&output_path).await.unwrap_or(());
     mkfifo(&output_path, Mode::S_IRWXU)?;
@@ -198,7 +217,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
     let mut input_paths = Vec::new();
     for i in 0..input_count {
         let mut recv = conn.accept_uni().await?;
-        let input_path = runtime_dir.join(format!("input-{i}"));
+        let input_path = runtime_dir.join(format!("{peer_id}-{stream_id}-input-{i}"));
         remove_file(&input_path).await.unwrap_or(());
         mkfifo(&input_path, Mode::S_IRWXU)?;
         let _input_path = input_path.clone();
