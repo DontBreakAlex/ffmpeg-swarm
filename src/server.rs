@@ -9,7 +9,6 @@ use crate::{cli, mqtt};
 use anyhow::anyhow;
 use anyhow::Result;
 use atomic_take::AtomicTake;
-use directories::ProjectDirs;
 use futures::TryFutureExt;
 use nix::sys::stat::Mode;
 use nix::unistd::mkdir;
@@ -18,6 +17,7 @@ use quinn::{Connection, Endpoint, RecvStream, ServerConfig, TransportConfig};
 use std::fs::remove_dir_all;
 
 use crate::config::read_config;
+use crate::utils::runtime_dir;
 use std::sync::Arc;
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
@@ -33,8 +33,7 @@ use uuid::Uuid;
 const KEEP_ALIVE_SECS: u64 = 120;
 
 pub fn run() -> Result<()> {
-    let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
-    let runtime_dir = dirs.runtime_dir().unwrap();
+    let runtime_dir = runtime_dir();
     _ = remove_dir_all(&runtime_dir);
     _ = mkdir(runtime_dir, Mode::S_IRWXU);
 
@@ -140,7 +139,18 @@ async fn handle_bi(
 
     match msg {
         RequestMessage::RequestJob { requester_uuid } => {
-            handle_request_job(conn, send, tx, stream_rx, requester_uuid).await?
+            let mut current_job = None;
+            if let Err(e) =
+                handle_request_job(conn, send, &tx, stream_rx, requester_uuid, &mut current_job)
+                    .await
+            {
+                if let Some(job_id) = current_job {
+                    tx.send(SQLiteCommand::ResetJob { job_id })
+                        .await
+                        .expect("Failed to send reset job command");
+                }
+                return Err(e);
+            }
         }
     }
 
@@ -150,9 +160,10 @@ async fn handle_bi(
 async fn handle_request_job(
     conn: Connection,
     mut send: quinn::SendStream,
-    tx: Sender<SQLiteCommand>,
+    tx: &Sender<SQLiteCommand>,
     stream_rx: broadcast::Receiver<(u64, Arc<AtomicTake<RecvStream>>)>,
     requester_uuid: Uuid,
+    current_job: &mut Option<u32>,
 ) -> Result<()> {
     let Some(LocalJob {
         job_id,
@@ -167,6 +178,8 @@ async fn handle_request_job(
         return Ok(());
     };
     let stream_id = ((job_id as u64) << 32) | task_id as u64;
+    *current_job = Some(job_id);
+    println!("Send job {job_id} from task {task_id} to peer {requester_uuid}");
 
     let mut set: JoinSet<Result<()>> = JoinSet::new();
     _ = create_dir_all(&job.output.parent().unwrap()).await;
@@ -202,7 +215,7 @@ async fn handle_request_job(
 
     let exit_code = receive_exit_code(new_stream_rx, stream_id).await?;
 
-    println!("Job {job_id} from task {task_id} exited with code {exit_code}");
+    println!("Job {job_id} from task {task_id} finished with code {exit_code}");
 
     tx.send(SQLiteCommand::Complete {
         job_id,

@@ -17,3 +17,10 @@ pub fn do_complete(
 
     Ok(())
 }
+
+pub fn do_reset_job(conn: &mut Connection, job_id: u32) -> Result<()> {
+    let mut stmt = conn.prepare_cached("UPDATE jobs SET started_at = NULL WHERE id = ?")?;
+    stmt.execute(params![job_id])?;
+
+    Ok(())
+}

@@ -8,11 +8,10 @@ use std::process::Stdio;
 use tokio::sync::{oneshot, RwLock};
 
 use anyhow::Result;
-use directories::ProjectDirs;
 use nix::sys::stat::Mode;
 use nix::unistd::mkfifo;
 use quinn::{ClientConfig, Connection, Endpoint};
-use tokio::fs::{create_dir_all, remove_file, OpenOptions};
+use tokio::fs::{create_dir_all, remove_file, File, OpenOptions};
 use tokio::io::{copy, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -24,7 +23,7 @@ use crate::config::read_config;
 use crate::inc::RequestMessage::RequestJob;
 use crate::inc::StreamedJob;
 use crate::server::commands::RunnableJob;
-use crate::utils::read_or_generate_uuid;
+use crate::utils::{read_or_generate_uuid, runtime_dir};
 use crate::{cli::parse::Arg, db::SQLiteCommand, ipc::Job};
 
 use super::commands::{AdvertiseMessage, LocalJob};
@@ -79,10 +78,16 @@ pub async fn loop_run(
 }
 
 pub async fn run_job(tx: &Sender<SQLiteCommand>, job: LocalJob) -> Result<()> {
+    let runtime_dir = runtime_dir();
     let LocalJob {
-        job_id, job, args, ..
+        job_id,
+        job,
+        args,
+        task_id,
     } = job;
     let Job { mut inputs, output } = job;
+
+    println!("Running job {job_id} from task {task_id} locally");
 
     let args: Vec<_> = args
         .into_iter()
@@ -99,9 +104,11 @@ pub async fn run_job(tx: &Sender<SQLiteCommand>, job: LocalJob) -> Result<()> {
 
     println!("Running ffmpeg with args: {:?}", args);
 
+    let logs = File::create(runtime_dir.join(format!("{job_id}-{task_id}-log.txt"))).await?;
     let mut child = Command::new("ffmpeg")
         .args(args)
         .stdin(Stdio::null())
+        .stderr(logs.into_std().await)
         .spawn()?;
 
     let status = child.wait().await?;
@@ -197,8 +204,8 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
         extension,
         stream_id,
     } = job;
-    let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
-    let runtime_dir = dirs.runtime_dir().unwrap();
+    println!("Running job {stream_id} from peer {peer_id} remotely");
+    let runtime_dir = runtime_dir();
     let mut set = JoinSet::new();
 
     let mut send = conn.open_uni().await?;
@@ -246,10 +253,12 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
     args.push("-y".into());
 
     println!("Running ffmpeg with args: {:?}", args);
+    let log = File::create(runtime_dir.join(format!("{peer_id}-{stream_id}-log.txt"))).await?;
 
     let mut child = Command::new("ffmpeg")
         .args(args)
         .stdin(Stdio::null())
+        .stderr(log.into_std().await)
         .spawn()?;
 
     let mut run = true;
@@ -262,12 +271,14 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
                 } else {
                     run = false;
                 }
-            },
+            }
             status = child.wait() => {
                 let mut send = conn.open_uni().await?;
+                let code = status.map(|e| e.code().unwrap_or(-1i32)).unwrap_or(-1i32);
                 send.write_u64_le(stream_id).await?;
-                send.write_i32(status.map(|e| e.code().unwrap_or(-1i32)).unwrap_or(-1i32)).await?;
+                send.write_i32(code).await?;
                 send.finish().await?;
+                println!("Job {stream_id} from peer {peer_id} finished with code {code}");
                 break;
             }
         }

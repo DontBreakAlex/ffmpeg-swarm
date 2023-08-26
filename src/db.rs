@@ -1,14 +1,14 @@
 use anyhow::Result;
-use directories::ProjectDirs;
 use rusqlite::Connection;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc::Receiver, oneshot};
 use uuid::Uuid;
 
-use crate::server::commands::AdvertiseMessage;
 use crate::server::commands::{do_acquire_job, do_advertise, RunnableJob};
 use crate::server::commands::{do_remove_peer, do_save_peer};
+use crate::server::commands::{do_reset_job, AdvertiseMessage};
+use crate::utils::data_dir;
 use crate::{
     ipc::{Job, Task},
     server::commands::{do_complete, do_dispatch, do_submit, LocalJob},
@@ -34,6 +34,9 @@ pub enum SQLiteCommand {
     },
     RemovePeer {
         peer_id: Uuid,
+    },
+    ResetJob {
+        job_id: u32,
     },
 }
 
@@ -108,14 +111,18 @@ async fn handle_cmd(
                 eprintln!("Failed to remove peer");
             }
         }
+        SQLiteCommand::ResetJob { job_id } => {
+            if do_reset_job(conn, job_id).is_err() {
+                eprintln!("Failed to reset job");
+            }
+        }
     }
 
     Ok(())
 }
 
 pub fn init() -> Result<Connection> {
-    let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
-    let path = dirs.data_dir();
+    let path = data_dir();
     std::fs::create_dir_all(&path)?;
     let db_path = path.join("ffmpeg-swarm.db");
     println!("Database running at: {}", db_path.display());

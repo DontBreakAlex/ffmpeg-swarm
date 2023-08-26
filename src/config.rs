@@ -1,3 +1,4 @@
+use crate::utils::data_dir;
 use anyhow::anyhow;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
 use base64::Engine;
@@ -9,9 +10,7 @@ use serde_derive::{Deserialize, Serialize};
 pub fn read_config() -> &'static Config {
     static UUID: OnceCell<Config> = OnceCell::new();
     UUID.get_or_init(|| {
-        let dirs = ProjectDirs::from("none", "dontbreakalex", "ffmpeg-swarm").unwrap();
-        let path = dirs.data_dir();
-        let path = path.join("config");
+        let path = data_dir().join("config");
         let config = std::fs::read(path).expect("Failed to read config");
         let config: Config = postcard::from_bytes(&config).expect("Failed to deserialize config");
         config
