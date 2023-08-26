@@ -86,6 +86,7 @@ fn create_jobs_for_dir(input: PathBuf, output: PathBuf, jobs: &mut Vec<Job>) -> 
         } else {
             let mut output = output.clone();
             output.push(path.file_name().unwrap());
+            output.set_extension("mkv");
             jobs.push(Job {
                 inputs: vec![fs::canonicalize(path)?],
                 output,

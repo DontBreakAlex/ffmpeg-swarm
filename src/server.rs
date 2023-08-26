@@ -6,8 +6,8 @@ use crate::inc::{RequestMessage, StreamedJob};
 use crate::server::commands::LocalJob;
 use crate::server::run::loop_run;
 use crate::{cli, mqtt};
-use anyhow::anyhow;
 use anyhow::Result;
+use anyhow::{anyhow, Context};
 use atomic_take::AtomicTake;
 use directories::ProjectDirs;
 use futures::TryFutureExt;
@@ -21,12 +21,12 @@ use crate::config::read_config;
 use std::sync::Arc;
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
-use tokio::fs::File;
+use tokio::fs::{create_dir_all, File};
 use tokio::io::copy;
 use tokio::io::AsyncReadExt;
 use tokio::select;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::{self, channel, Sender};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -46,12 +46,12 @@ pub fn run() -> Result<()> {
     runtime.block_on(async move {
         let (db_tx, db_rx) = mpsc::channel(256);
         let (advertise_tx, advertise_rx) = mpsc::channel(256);
-        let (run_tx, run_rx) = mpsc::channel(1);
+        let (run_tx, run_rx) = channel(1);
 
         let cli_fut = tokio::spawn(cli::loop_cli(db_tx.clone()));
         let quinn_fut = tokio::spawn(loop_quinn(db_tx.clone()));
-        let db_fut = tokio::spawn(loop_db(db_rx, advertise_tx, run_tx));
-        let run_fut = tokio::spawn(loop_run(db_tx.clone(), run_rx));
+        let db_fut = tokio::spawn(loop_db(db_rx, advertise_tx, run_rx));
+        let run_fut = tokio::spawn(loop_run(db_tx.clone(), run_tx));
         let mqtt_fut = tokio::spawn(mqtt::loop_mqtt(db_tx, advertise_rx));
 
         println!("Server running");
@@ -169,6 +169,7 @@ async fn handle_request_job(
     let stream_id = ((job_id as u64) << 32) | task_id as u64;
 
     let mut set: JoinSet<Result<()>> = JoinSet::new();
+    _ = create_dir_all(&job.output.parent().unwrap()).await;
     let out = File::create(&job.output).await?;
     let _conn = conn.clone();
     let new_stream_rx = stream_rx.resubscribe();

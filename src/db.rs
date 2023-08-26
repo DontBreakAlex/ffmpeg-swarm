@@ -40,7 +40,7 @@ pub enum SQLiteCommand {
 pub async fn loop_db(
     mut rx: Receiver<SQLiteCommand>,
     advertise_tx: Sender<Option<AdvertiseMessage>>,
-    run_tx: Sender<RunnableJob>,
+    mut request_rx: Receiver<oneshot::Sender<RunnableJob>>,
 ) -> Result<()> {
     let mut conn = init()?;
     let mut jobs_available = true;
@@ -51,9 +51,12 @@ pub async fn loop_db(
             cmd = rx.recv() => {
                 handle_cmd(cmd.expect("Database command sender not to be dropped"), &mut conn, &advertise_tx, &mut jobs_available).await?;
             }
-            permit = run_tx.reserve(), if jobs_available => {
+            permit = request_rx.recv(), if jobs_available => {
                 if let Some(job) = do_acquire_job(&mut conn)? {
-                    permit.expect("Failed to send job to run").send(job);
+                    permit
+                    .expect("Failed to send job to run")
+                    .send(job)
+                    .expect("Failed to send job to run");
                 } else {
                     jobs_available = false;
                 }
@@ -73,7 +76,7 @@ async fn handle_cmd(
             if reply.send(do_submit(conn, task, jobs)).is_err() {
                 eprintln!("Failed to send reply to submit command");
             } else {
-                // *jobs_available = true;
+                *jobs_available = true;
             }
         }
         SQLiteCommand::Dispatch { reply } => {

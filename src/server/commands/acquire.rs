@@ -3,6 +3,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 use super::{AdvertiseMessage, LocalJob};
 
+#[derive(Debug)]
 pub enum RunnableJob {
     Remote(AdvertiseMessage),
     Local(LocalJob),
@@ -20,8 +21,8 @@ pub fn do_acquire_job(conn: &mut Connection) -> Result<Option<RunnableJob>> {
         "SELECT uuid, ips, oldest_job FROM known_peers ORDER BY oldest_job LIMIT 1;",
     )?;
 
-    let local_job = get_job.query_row([], LocalJob::from_row).optional()?;
-    // let local_job = None::<LocalJob>;
+    // let local_job = get_job.query_row([], LocalJob::from_row).optional()?;
+    let local_job = None::<LocalJob>;
 
     if let Some(local_job) = local_job {
         start_task.execute([local_job.task_id])?;
@@ -43,6 +44,5 @@ pub fn do_acquire_job(conn: &mut Connection) -> Result<Option<RunnableJob>> {
         } else {
             Ok(None)
         }
-        // Ok(None)
     }
 }

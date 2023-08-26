@@ -5,6 +5,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Row};
 use tokio::sync::mpsc::Sender;
 
+#[derive(Debug)]
 pub struct LocalJob {
     pub job_id: u32,
     pub task_id: u32,

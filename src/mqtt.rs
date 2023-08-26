@@ -30,7 +30,7 @@ pub async fn loop_mqtt(
 
     let ips: Vec<IpAddr> = list_afinet_netifas()?
         .into_iter()
-        .filter(|(_, ip)| !ip.is_loopback() && ip.is_ipv4())
+        .filter(|(_, ip)| !ip.is_loopback())
         .map(|i| i.1)
         .collect();
 
@@ -43,9 +43,9 @@ pub async fn loop_mqtt(
                         let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else {
                             continue;
                         };
-                        if msg.peer_id == *uuid {
-                            continue;
-                        }
+                        // if msg.peer_id == *uuid {
+                        //     continue;
+                        // }
                         if let Err(e) = _tx.send(SQLiteCommand::SavePeer { message: msg }).await {
                             eprintln!("Failed to save peer: {}", e);
                         }

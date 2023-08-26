@@ -4,17 +4,17 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::process::Stdio;
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 
 use anyhow::Result;
 use directories::ProjectDirs;
 use nix::sys::stat::Mode;
 use nix::unistd::mkfifo;
 use quinn::{ClientConfig, Connection, Endpoint};
-use tokio::fs::{remove_file, OpenOptions};
+use tokio::fs::{create_dir_all, remove_file, OpenOptions};
 use tokio::io::{copy, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::{select, sync::mpsc::Sender};
 use uuid::Uuid;
@@ -30,21 +30,30 @@ use super::commands::{AdvertiseMessage, LocalJob};
 
 type ConnectionPool = RwLock<HashMap<IpAddr, Connection>>;
 
-pub async fn loop_run(tx: Sender<SQLiteCommand>, mut run_rx: Receiver<RunnableJob>) -> Result<()> {
+pub async fn loop_run(
+    tx: Sender<SQLiteCommand>,
+    job_request_tx: mpsc::Sender<oneshot::Sender<RunnableJob>>,
+) -> Result<()> {
     let endpoint = make_endpoint().await?;
     let conn_pool = ConnectionPool::default();
     let uuid = read_or_generate_uuid()?;
 
     loop {
-        let job = run_rx.recv().await.expect("run_rx not to be dropped");
+        let (s, r) = oneshot::channel();
+        job_request_tx.send(s).await?;
+        let Ok(job) = r.await else {
+            println!("No job available");
+            continue;
+        };
         match job {
             RunnableJob::Remote(msg) => {
                 if let Err(e) = get_remote_job(&tx, &endpoint, &msg, &conn_pool, *uuid).await {
                     println!("Error getting remote job: {:?}", e);
+                    tx.send(SQLiteCommand::RemovePeer {
+                        peer_id: msg.peer_id,
+                    })
+                    .await?;
                 }
-                // get_remote_job(&tx, &endpoint, &msg, &conn_pool)
-                //     .await
-                //     .unwrap();
             }
             RunnableJob::Local(j) => {
                 if let Err(e) = run_job(&tx, j).await {
@@ -71,6 +80,8 @@ pub async fn run_job(tx: &Sender<SQLiteCommand>, job: LocalJob) -> Result<()> {
             Arg::Other(s) => Ok(s.into()),
         })
         .collect::<Result<Vec<PathBuf>, anyhow::Error>>()?;
+
+    _ = create_dir_all(output.parent().unwrap()).await;
 
     println!("Running ffmpeg with args: {:?}", args);
 
@@ -120,11 +131,12 @@ async fn get_remote_job(
                             break 'a c.get().clone();
                         }
                         Entry::Vacant(entry) => {
-                            if let Ok(conn) =
-                                endpoint.connect(SocketAddr::new(*ip, 9753), "swarm")?.await
+                            if let Ok(conn) = endpoint.connect(SocketAddr::new(*ip, 9753), "swarm")
                             {
-                                entry.insert(conn.clone());
-                                break 'a conn;
+                                if let Ok(conn) = conn.await {
+                                    entry.insert(conn.clone());
+                                    break 'a conn;
+                                }
                             }
                         }
                     }
@@ -173,6 +185,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
     let mut send = conn.open_uni().await?;
     let mut output_path = runtime_dir.join(format!("output"));
     output_path.set_extension(extension);
+    remove_file(&output_path).await.unwrap_or(());
     mkfifo(&output_path, Mode::S_IRWXU)?;
     let _output_path = output_path.clone();
     set.spawn(async move {
@@ -186,6 +199,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, _peer_id: Uuid) 
     for i in 0..input_count {
         let mut recv = conn.accept_uni().await?;
         let input_path = runtime_dir.join(format!("input-{i}"));
+        remove_file(&input_path).await.unwrap_or(());
         mkfifo(&input_path, Mode::S_IRWXU)?;
         let _input_path = input_path.clone();
         set.spawn(async move {
