@@ -5,7 +5,7 @@ mod validation;
 use crate::db::SQLiteCommand;
 use crate::ipc::ServiceToCli;
 use crate::server::commands;
-use crate::server::run::NUM_THREADS;
+use crate::server::run::{NUM_THREADS, REFRESH};
 use crate::{
     cli::{
         parse::{parse_ffmpeg_args, FfmpegArgs},
@@ -83,6 +83,7 @@ pub async fn handle_cli(conn: LocalSocketStream, tx: Sender<SQLiteCommand>) -> R
         CliToService::SubmitJob { task, jobs } => commands::handle_submit(tx, task, jobs).await,
         CliToService::SetNumjobs { numjobs } => {
             NUM_THREADS.store(numjobs, Ordering::Relaxed);
+            REFRESH.get().unwrap().send(()).await?;
             Ok(ServiceToCli::Ok)
         }
     };

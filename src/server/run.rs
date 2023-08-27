@@ -1,22 +1,21 @@
-use std::path::PathBuf;
-
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::env;
-use std::net::{IpAddr, SocketAddr};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
-use tokio::sync::{oneshot, RwLock};
-
 use anyhow::Result;
 use nix::sys::stat::Mode;
 use nix::unistd::mkfifo;
 use quinn::{ClientConfig, Connection, Endpoint, TransportConfig};
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::env;
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::fs::{create_dir_all, remove_file, File, OpenOptions};
 use tokio::io::{copy, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinSet;
 use tokio::{select, sync::mpsc::Sender};
 use uuid::Uuid;
@@ -34,6 +33,7 @@ use super::commands::{AdvertiseMessage, LocalJob};
 type ConnectionPool = RwLock<HashMap<IpAddr, Connection>>;
 
 pub static NUM_THREADS: AtomicUsize = AtomicUsize::new(1);
+pub static REFRESH: OnceLock<Sender<()>> = OnceLock::new();
 
 pub async fn loop_run(
     tx: Sender<SQLiteCommand>,
@@ -47,10 +47,15 @@ pub async fn loop_run(
     if let Ok(Ok(i)) = env::var("NUM_THREADS").map(|s| s.parse()) {
         NUM_THREADS.store(i, Ordering::Relaxed)
     }
+    let (refresh_tx, mut refresh_rx) = mpsc::channel(1);
+    REFRESH.set(refresh_tx).unwrap();
 
     loop {
         while set.len() >= NUM_THREADS.load(Ordering::Relaxed) {
-            set.join_next().await;
+            select! {
+                _ = set.join_next() => (),
+                _ = refresh_rx.recv() => (),
+            }
         }
 
         let (s, r) = oneshot::channel();
