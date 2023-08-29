@@ -70,8 +70,8 @@ pub fn run() -> Result<()> {
 async fn loop_quinn(tx: Sender<SQLiteCommand>) -> Result<()> {
     let config = read_config();
     let mut transport = TransportConfig::default();
-    transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
-    transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECS - 10).try_into()?));
+    transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS + 30).try_into()?));
+    transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
     let mut server_config =
         ServerConfig::with_single_cert(vec![config.cert.clone()], config.key.clone())?;
     server_config.transport_config(transport.into());

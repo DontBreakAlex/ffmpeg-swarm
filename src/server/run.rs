@@ -313,8 +313,8 @@ pub async fn make_endpoint() -> Result<Endpoint> {
     certs.add(&cert)?;
     let mut client_config = ClientConfig::with_root_certificates(certs);
     let mut transport = TransportConfig::default();
-    transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
-    transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECS - 10).try_into()?));
+    transport.max_idle_timeout(Some(Duration::from_secs(KEEP_ALIVE_SECS + 30).try_into()?));
+    transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECS).try_into()?));
     client_config.transport_config(transport.into());
     endpoint.set_default_client_config(client_config);
 

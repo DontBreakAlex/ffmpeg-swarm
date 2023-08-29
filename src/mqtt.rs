@@ -6,15 +6,17 @@ use anyhow::Result;
 use base64::engine::general_purpose;
 use base64::Engine;
 use local_ip_address::list_afinet_netifas;
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
+use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS};
 use sha2::{Digest, Sha256};
 use std::net::IpAddr;
 use std::ops::Add;
 use std::time::Duration;
+use tokio::select;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::{sleep, timeout};
+use uuid::Uuid;
 
-const ADVERTISE_INTERVAL: Duration = Duration::from_secs(30);
+const ADVERTISE_INTERVAL: Duration = Duration::from_secs(60);
 
 pub async fn loop_mqtt(
     tx: Sender<SQLiteCommand>,
@@ -50,30 +52,40 @@ async fn do_loop(
         .map(|i| i.1)
         .collect();
 
-    let _tx = tx.clone();
-    tokio::spawn(async move {
-        while let Ok(notification) = eventloop.poll().await {
-            match notification {
-                Event::Incoming(packet) => match packet {
-                    Packet::Publish(p) => {
-                        let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else {
-                            continue;
-                        };
-                        if msg.peer_id == *uuid {
-                            continue;
-                        }
-                        if let Err(e) = _tx.send(SQLiteCommand::SavePeer { message: msg }).await {
-                            eprintln!("Failed to save peer: {}", e);
-                        }
-                    }
-                    _ => {}
-                },
-                Event::Outgoing(_) => {}
-            }
+    loop {
+        select! {
+            biased;
+            e = loop_advertise(&tx, &mut rx, &topic, &client, &ips) => e?,
+            e = loop_discover(uuid, &mut eventloop, &tx) => e?,
         }
-    });
+    }
+}
 
-    loop_advertise(&tx, &mut rx, &topic, &client, &ips).await
+async fn loop_discover(
+    uuid: &Uuid,
+    eventloop: &mut EventLoop,
+    tx: &Sender<SQLiteCommand>,
+) -> Result<()> {
+    loop {
+        let notification = eventloop.poll().await?;
+        match notification {
+            Event::Incoming(packet) => match packet {
+                Packet::Publish(p) => {
+                    let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else {
+                        continue;
+                    };
+                    if msg.peer_id == *uuid {
+                        continue;
+                    }
+                    if let Err(e) = tx.send(SQLiteCommand::SavePeer { message: msg }).await {
+                        eprintln!("Failed to save peer: {}", e);
+                    }
+                }
+                _ => {}
+            },
+            Event::Outgoing(_) => {}
+        }
+    }
 }
 
 async fn loop_advertise(
