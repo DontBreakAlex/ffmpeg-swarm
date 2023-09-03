@@ -6,14 +6,24 @@ use directories::ProjectDirs;
 use once_cell::sync::OnceCell;
 use rustls::{Certificate, PrivateKey};
 use serde_derive::{Deserialize, Serialize};
+use std::env;
 
 pub fn read_config() -> &'static Config {
     static UUID: OnceCell<Config> = OnceCell::new();
     UUID.get_or_init(|| {
-        let path = data_dir().join("config");
-        let config = std::fs::read(path).expect("Failed to read config");
-        let config: Config = postcard::from_bytes(&config).expect("Failed to deserialize config");
-        config
+        if let Ok(token) = env::var("TOKEN") {
+            let compressed = STANDARD_NO_PAD
+                .decode(token.as_bytes())
+                .expect("Invalid config data");
+            let mut decompressed = Vec::new();
+            zstd::stream::copy_decode(&compressed[..], &mut decompressed)
+                .expect("Invalid config data");
+            postcard::from_bytes::<Config>(&decompressed).expect("Failed to deserialize config")
+        } else {
+            let path = data_dir().join("config");
+            let config = std::fs::read(path).expect("Failed to read config");
+            postcard::from_bytes::<Config>(&config).expect("Failed to deserialize config")
+        }
     })
 }
 
