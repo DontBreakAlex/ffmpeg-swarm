@@ -31,5 +31,7 @@ serde_json = "1.0.100"
 service-manager = "0.3.0"
 sha2 = "0.10.7"
 tokio = { version = "1.29.1", features = ["io-util", "macros", "sync", "process", "fs"] }
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 uuid = { version = "1.4.1", features = ["v4", "serde"] }
 zstd = "0.12.4"

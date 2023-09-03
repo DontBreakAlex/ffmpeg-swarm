@@ -13,11 +13,13 @@ use futures::TryFutureExt;
 use nix::sys::stat::Mode;
 use nix::unistd::mkdir;
 use quinn::{Connection, Endpoint, RecvStream, ServerConfig, TransportConfig};
+use tracing::{debug, error, info};
+use tracing_subscriber::EnvFilter;
 
 use std::fs::remove_dir_all;
 
 use crate::config::read_config;
-use crate::utils::runtime_dir;
+use crate::utils::{read_or_generate_uuid, runtime_dir};
 use std::sync::Arc;
 use std::vec;
 use std::{net::SocketAddr, time::Duration};
@@ -33,6 +35,9 @@ use uuid::Uuid;
 const KEEP_ALIVE_SECS: u64 = 120;
 
 pub fn run() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or(EnvFilter::new("INFO")))
+        .init();
     let runtime_dir = runtime_dir();
     _ = remove_dir_all(&runtime_dir);
     _ = mkdir(runtime_dir, Mode::S_IRWXU);
@@ -53,7 +58,7 @@ pub fn run() -> Result<()> {
         let run_fut = tokio::spawn(loop_run(db_tx.clone(), run_tx));
         let mqtt_fut = tokio::spawn(mqtt::loop_mqtt(db_tx, advertise_rx));
 
-        println!("Server running");
+        info!("Server running");
 
         let e = tokio::select! {
             _ = cli_fut => anyhow!("CLI loop exited unexpectedly"),
@@ -94,11 +99,11 @@ async fn loop_quinn(tx: Sender<SQLiteCommand>) -> Result<()> {
                                         let _conn = connection.clone();
                                         tokio::spawn(
                                             handle_bi(send, recv, _tx, _conn, stream_tx.subscribe())
-                                                .inspect_err(|e| eprintln!("{:?}", e)),
+                                                .inspect_err(|e| error!("{:?}", e)),
                                         );
                                     }
                                     Err(e) => {
-                                        eprintln!("{}", e);
+                                        error!("{}", e);
                                         return;
                                     }
                                 }
@@ -108,18 +113,18 @@ async fn loop_quinn(tx: Sender<SQLiteCommand>) -> Result<()> {
                                     let Ok(stream_id) = recv.read_u64_le().await else { return };
 
                                     if let Err(e) = stream_tx.send((stream_id, Arc::new(AtomicTake::new(recv)))) {
-                                        eprintln!("Error sending stream: {}", e);
+                                        error!("Error sending stream: {}", e);
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("{}", e);
+                                    error!("{}", e);
                                     return;
                                 }
                             }
                         }
                     }
                 }
-                Err(e) => eprintln!("{}", e),
+                Err(e) => error!("{}", e),
             }
         });
     }
@@ -128,7 +133,7 @@ async fn loop_quinn(tx: Sender<SQLiteCommand>) -> Result<()> {
 }
 
 async fn handle_bi(
-    send: quinn::SendStream,
+    mut send: quinn::SendStream,
     mut recv: RecvStream,
     tx: Sender<SQLiteCommand>,
     conn: Connection,
@@ -151,6 +156,11 @@ async fn handle_bi(
                 }
                 return Err(e);
             }
+        }
+        RequestMessage::Identify => {
+            debug!("Sending indentity to {}", conn.remote_address());
+            send.write_all(read_or_generate_uuid()?.as_bytes()).await?;
+            send.finish().await?;
         }
     }
 
@@ -179,7 +189,7 @@ async fn handle_request_job(
     };
     let stream_id = ((job_id as u64) << 32) | task_id as u64;
     *current_job = Some(job_id);
-    println!("Send job {job_id} from task {task_id} to peer {requester_uuid}");
+    info!("Send job {job_id} from task {task_id} to peer {requester_uuid}");
 
     let mut set: JoinSet<Result<()>> = JoinSet::new();
     _ = create_dir_all(&job.output.parent().unwrap()).await;
@@ -215,7 +225,7 @@ async fn handle_request_job(
 
     let exit_code = receive_exit_code(new_stream_rx, stream_id).await?;
 
-    println!("Job {job_id} from task {task_id} finished with code {exit_code}");
+    info!("Job {job_id} from task {task_id} finished with code {exit_code}");
 
     tx.send(SQLiteCommand::Complete {
         job_id,

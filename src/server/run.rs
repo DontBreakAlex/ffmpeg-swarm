@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use nix::sys::stat::Mode;
 use nix::unistd::mkfifo;
 use quinn::{ClientConfig, Connection, Endpoint, TransportConfig};
@@ -17,11 +17,13 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinSet;
+use tokio::time::timeout;
 use tokio::{select, sync::mpsc::Sender};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use crate::config::read_config;
-use crate::inc::RequestMessage::RequestJob;
+use crate::inc::RequestMessage::{self, RequestJob};
 use crate::inc::StreamedJob;
 use crate::server::commands::RunnableJob;
 use crate::server::KEEP_ALIVE_SECS;
@@ -45,10 +47,14 @@ pub async fn loop_run(
     let mut set = JoinSet::new();
 
     if let Ok(Ok(i)) = env::var("NUM_THREADS").map(|s| s.parse()) {
-        NUM_THREADS.store(i, Ordering::Relaxed)
+        NUM_THREADS.store(i, Ordering::Relaxed);
     }
     let (refresh_tx, mut refresh_rx) = mpsc::channel(1);
     REFRESH.set(refresh_tx).unwrap();
+    debug!(
+        "Running {} job(s) at a time",
+        NUM_THREADS.load(Ordering::Relaxed)
+    );
 
     loop {
         while set.len() >= NUM_THREADS.load(Ordering::Relaxed) {
@@ -64,10 +70,12 @@ pub async fn loop_run(
 
         let (s, r) = oneshot::channel();
         job_request_tx.send(s).await?;
+        debug!("Waiting for job");
         let Ok(job) = r.await else {
-            println!("No job available");
+            info!("No job available");
             continue;
         };
+        debug!("Got job {:?}", job);
 
         match job {
             RunnableJob::Remote(msg) => {
@@ -75,7 +83,7 @@ pub async fn loop_run(
                 if let Err(e) =
                     get_remote_job(&tx, &endpoint, msg, &conn_pool, *uuid, &mut set).await
                 {
-                    println!("Error getting remote job: {:?}", e);
+                    error!("Error getting remote job: {:?}", e);
                     tx.send(SQLiteCommand::RemovePeer { peer_id }).await?;
                 }
             }
@@ -83,7 +91,7 @@ pub async fn loop_run(
                 let tx = tx.clone();
                 set.spawn(async move {
                     if let Err(e) = run_job(&tx, j).await {
-                        println!("Error running job: {:?}", e);
+                        error!("Error running job: {:?}", e);
                     }
                 });
             }
@@ -101,7 +109,7 @@ pub async fn run_job(tx: &Sender<SQLiteCommand>, job: LocalJob) -> Result<()> {
     } = job;
     let Job { mut inputs, output } = job;
 
-    println!("Running job {job_id} from task {task_id} locally");
+    info!("Running job {job_id} from task {task_id} locally");
 
     let args: Vec<_> = args
         .into_iter()
@@ -116,7 +124,7 @@ pub async fn run_job(tx: &Sender<SQLiteCommand>, job: LocalJob) -> Result<()> {
 
     _ = create_dir_all(output.parent().unwrap()).await;
 
-    println!("Running ffmpeg with args: {:?}", args);
+    info!("Running ffmpeg with args: {:?}", args);
 
     let logs = File::create(runtime_dir.join(format!("{job_id}-{task_id}-log.txt"))).await?;
     let mut child = Command::new("ffmpeg")
@@ -127,7 +135,7 @@ pub async fn run_job(tx: &Sender<SQLiteCommand>, job: LocalJob) -> Result<()> {
 
     let status = child.wait().await?;
 
-    println!("ffmpeg exited with status: {}", status);
+    info!("ffmpeg exited with status: {}", status);
 
     tx.send(SQLiteCommand::Complete {
         job_id,
@@ -152,8 +160,13 @@ async fn get_remote_job(
         if let Some(ip) = iter.next() {
             if let Some(conn) = pool.read().await.get(ip).cloned() {
                 if let Some(_) = conn.close_reason() {
+                    debug!(
+                        "Discarding closed connection to peer: {:?}",
+                        conn.remote_address()
+                    );
                     pool.write().await.remove(ip);
                 } else {
+                    debug!("Reusing connection to peer: {:?}", conn.remote_address());
                     break conn;
                 }
             }
@@ -169,9 +182,29 @@ async fn get_remote_job(
                         Entry::Vacant(entry) => {
                             if let Ok(conn) = endpoint.connect(SocketAddr::new(*ip, 9753), "swarm")
                             {
-                                if let Ok(conn) = conn.await {
-                                    entry.insert(conn.clone());
-                                    break 'a conn;
+                                if let Ok(Ok(conn)) = timeout(Duration::from_secs(10), conn).await {
+                                    debug!(
+                                        "Established new connection to peer: {}",
+                                        conn.remote_address()
+                                    );
+                                    let (mut send, mut recv) = conn.open_bi().await?;
+                                    send.write_all(&postcard::to_allocvec(
+                                        &RequestMessage::Identify,
+                                    )?)
+                                    .await?;
+                                    send.finish().await?;
+                                    let mut buf = [0u8; 16];
+                                    recv.read_exact(&mut buf).await?;
+                                    let peer_uuid = Uuid::from_slice(&buf)?;
+                                    if peer_uuid == msg.peer_id {
+                                        entry.insert(conn.clone());
+                                        break 'a conn;
+                                    }
+                                    debug!(
+                                        "Peer {} does not match advertised peer {} for ip {}",
+                                        peer_uuid, msg.peer_id, ip
+                                    );
+                                    conn.close(0u8.into(), "Invalid peer id".as_bytes());
                                 }
                             }
                         }
@@ -183,7 +216,7 @@ async fn get_remote_job(
         }
     };
 
-    println!("Connected to peer: {:?}", conn.remote_address());
+    debug!("Requesting job from peer: {}", conn.remote_address());
     let (mut send, mut recv) = conn.open_bi().await?;
     send.write_all(
         &postcard::to_allocvec(&RequestJob {
@@ -195,9 +228,14 @@ async fn get_remote_job(
     send.finish().await?;
     let job: Option<StreamedJob> = postcard::from_bytes(&recv.read_to_end(1_000_000).await?)?;
     if let Some(job) = job {
+        let _tx = tx.clone();
         set.spawn(async move {
             if let Err(e) = run_remote_job(conn, job, msg.peer_id).await {
-                println!("Error running remote job: {:?}", e);
+                _tx.send(SQLiteCommand::RemovePeer {
+                    peer_id: msg.peer_id,
+                })
+                .await.expect("Failed to send remove peer command");
+                error!("Error running remote job: {:?}", e);
             }
         });
     } else {
@@ -205,7 +243,7 @@ async fn get_remote_job(
             peer_id: msg.peer_id,
         })
         .await?;
-        println!("No job available");
+        debug!("No job available from peer: {}", conn.remote_address());
     }
 
     Ok(())
@@ -218,7 +256,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
         extension,
         stream_id,
     } = job;
-    println!("Running job {stream_id} from peer {peer_id} remotely");
+    info!("Running job {stream_id} from peer {peer_id} remotely");
     let runtime_dir = runtime_dir();
     let mut set = JoinSet::new();
 
@@ -231,8 +269,8 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
     set.spawn(async move {
         send.write_u64_le(stream_id).await?;
         let mut file = OpenOptions::new().read(true).open(_output_path).await?;
-        copy(&mut file, &mut send).await?;
-        send.finish().await?;
+        copy(&mut file, &mut send).await.context("Ouput")?;
+        send.finish().await.context("Finish")?;
         Ok::<(), anyhow::Error>(())
     });
     let mut input_paths = Vec::new();
@@ -244,7 +282,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
         let _input_path = input_path.clone();
         set.spawn(async move {
             let mut file = OpenOptions::new().write(true).open(&_input_path).await?;
-            copy(&mut recv, &mut file).await?;
+            copy(&mut recv, &mut file).await.context("Input")?;
             Ok::<(), anyhow::Error>(())
         });
         // let mut file = OpenOptions::new().write(true).create(true).open(&input_path).await?;
@@ -266,14 +304,15 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
         .collect::<Result<Vec<PathBuf>, anyhow::Error>>()?;
     args.push("-y".into());
 
-    println!("Running ffmpeg with args: {:?}", args);
+    info!("Running ffmpeg with args: {:?}", args);
     let log = File::create(runtime_dir.join(format!("{peer_id}-{stream_id}-log.txt"))).await?;
 
     let mut child = Command::new("ffmpeg")
         .args(args)
         .stdin(Stdio::null())
         .stderr(log.into_std().await)
-        .spawn()?;
+        .spawn()
+        .context("Child")?;
 
     let mut run = true;
 
@@ -292,7 +331,7 @@ pub async fn run_remote_job(conn: Connection, job: StreamedJob, peer_id: Uuid) -
                 send.write_u64_le(stream_id).await?;
                 send.write_i32(code).await?;
                 send.finish().await?;
-                println!("Job {stream_id} from peer {peer_id} finished with code {code}");
+                info!("Job {stream_id} from peer {peer_id} finished with code {code}");
                 break;
             }
         }

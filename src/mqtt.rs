@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::select;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::{sleep, timeout};
+use tracing::{debug, error};
 use uuid::Uuid;
 
 const ADVERTISE_INTERVAL: Duration = Duration::from_secs(60);
@@ -24,7 +25,7 @@ pub async fn loop_mqtt(
 ) -> Result<()> {
     loop {
         if let Err(e) = do_loop(&tx, &mut rx).await {
-            println!("MQTT failure: {}", e);
+            error!("MQTT failure: {}", e);
             sleep(ADVERTISE_INTERVAL).await;
         }
     }
@@ -42,19 +43,22 @@ async fn do_loop(
         1883,
     );
     mqttoptions.set_keep_alive(ADVERTISE_INTERVAL.add(Duration::from_secs(10)));
+    debug!("MQTT topic is {:?}", topic);
 
     let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
     client.subscribe(&topic, QoS::AtLeastOnce).await?;
 
     let mut ips: Vec<IpAddr> = list_afinet_netifas()?
         .into_iter()
-        .filter(|(_, ip)| !ip.is_loopback())
+        .filter(|(_, ip)| !ip.is_loopback() && ip.is_ipv4())
         .map(|i| i.1)
         .collect();
 
     if let Some(ip) = public_ip::addr().await {
         ips.push(ip);
     }
+
+    debug!("Nodes ips are {:?}", ips);
 
     loop {
         select! {
@@ -78,11 +82,12 @@ async fn loop_discover(
                     let Ok(msg) = postcard::from_bytes::<AdvertiseMessage>(&p.payload) else {
                         continue;
                     };
+                    debug!("Received advertise message: {:?}", msg);
                     if msg.peer_id == *uuid {
                         continue;
                     }
                     if let Err(e) = tx.send(SQLiteCommand::SavePeer { message: msg }).await {
-                        eprintln!("Failed to save peer: {}", e);
+                        error!("Failed to save peer: {}", e);
                     }
                 }
                 _ => {}
@@ -115,6 +120,7 @@ async fn loop_advertise(
         client
             .publish(topic, QoS::AtLeastOnce, false, postcard::to_allocvec(&msg)?)
             .await?;
+        debug!("Sent advertise message: {:?}", msg);
     }
 }
 

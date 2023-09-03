@@ -3,6 +3,7 @@ use rusqlite::Connection;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc::Receiver, oneshot};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::server::commands::{do_acquire_job, do_advertise, RunnableJob};
@@ -14,6 +15,7 @@ use crate::{
     server::commands::{do_complete, do_dispatch, do_submit, LocalJob},
 };
 
+#[derive(Debug)]
 pub enum SQLiteCommand {
     SaveTask {
         task: Task,
@@ -52,9 +54,11 @@ pub async fn loop_db(
         select! {
             biased;
             cmd = rx.recv() => {
+                debug!("Db handling command {:?}", cmd);
                 handle_cmd(cmd.expect("Database command sender not to be dropped"), &mut conn, &advertise_tx, &mut jobs_available).await?;
             }
             permit = request_rx.recv(), if jobs_available => {
+                debug!("Db handling job request");
                 if let Some(job) = do_acquire_job(&mut conn)? {
                     permit
                     .expect("Failed to send job to run")
@@ -125,7 +129,7 @@ pub fn init() -> Result<Connection> {
     let path = data_dir();
     std::fs::create_dir_all(&path)?;
     let db_path = path.join("ffmpeg-swarm.db");
-    println!("Database running at: {}", db_path.display());
+    info!("Database running at: {}", db_path.display());
     let conn = Connection::open(db_path)?;
     conn.execute_batch(include_str!("./init.sql"))?;
 
