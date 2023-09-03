@@ -46,11 +46,15 @@ async fn do_loop(
     let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
     client.subscribe(&topic, QoS::AtLeastOnce).await?;
 
-    let ips: Vec<IpAddr> = list_afinet_netifas()?
+    let mut ips: Vec<IpAddr> = list_afinet_netifas()?
         .into_iter()
         .filter(|(_, ip)| !ip.is_loopback())
         .map(|i| i.1)
         .collect();
+
+    if let Some(ip) = public_ip::addr().await {
+        ips.push(ip);
+    }
 
     loop {
         select! {
@@ -108,9 +112,10 @@ async fn loop_advertise(
         };
         msg.peer_ips = ips.clone();
 
-        client
-            .publish(topic, QoS::AtLeastOnce, false, postcard::to_allocvec(&msg)?)
-            .await?;
+        println!("Publishing {:?}", msg);
+        // client
+        //     .publish(topic, QoS::AtLeastOnce, false, postcard::to_allocvec(&msg)?)
+        //     .await?;
     }
 }
 

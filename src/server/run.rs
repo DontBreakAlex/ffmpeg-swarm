@@ -54,10 +54,10 @@ pub async fn loop_run(
         while set.len() >= NUM_THREADS.load(Ordering::Relaxed) {
             select! {
                 r = set.join_next() => {
-		            if r.is_none() && NUM_THREADS.load(Ordering::Relaxed) == 0 {
-						return Ok(());
-		            }
-	            },
+                    if r.is_none() && NUM_THREADS.load(Ordering::Relaxed) == 0 {
+                        return Ok(());
+                    }
+                },
                 _ = refresh_rx.recv() => (),
             }
         }
