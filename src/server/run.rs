@@ -58,6 +58,7 @@ pub async fn loop_run(
 
     loop {
         while set.len() >= NUM_THREADS.load(Ordering::Relaxed) {
+	        debug!("{} jobs are running", set.len());
             select! {
                 r = set.join_next() => {
                     if r.is_none() && NUM_THREADS.load(Ordering::Relaxed) == 0 {
@@ -171,6 +172,7 @@ async fn get_remote_job(
                 }
             }
         } else {
+	        debug!("Found no connections to reuse");
             let mut iter = msg.peer_ips.iter();
             loop {
                 if let Some(ip) = iter.next() {
