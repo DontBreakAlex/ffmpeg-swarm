@@ -112,10 +112,9 @@ async fn loop_advertise(
         };
         msg.peer_ips = ips.clone();
 
-        println!("Publishing {:?}", msg);
-        // client
-        //     .publish(topic, QoS::AtLeastOnce, false, postcard::to_allocvec(&msg)?)
-        //     .await?;
+        client
+            .publish(topic, QoS::AtLeastOnce, false, postcard::to_allocvec(&msg)?)
+            .await?;
     }
 }
 
