@@ -59,7 +59,7 @@ pub fn run() -> Result<()> {
             _ = cli_fut => anyhow!("CLI loop exited unexpectedly"),
             e = quinn_fut => anyhow!("QUIC loop exited unexpectedly {:#?}", e??),
             e = db_fut => anyhow!("DB loop exited unexpectedly {:#?}", e??),
-            e = run_fut => anyhow!("Run loop exited unexpectedly {:#?}", e??),
+            e = run_fut => return Ok(e??),
             e = mqtt_fut => anyhow!("MQTT loop exited unexpectedly {:#?}", e??),
         };
 
