@@ -58,7 +58,7 @@ pub async fn loop_run(
 
     loop {
         while set.len() >= NUM_THREADS.load(Ordering::Relaxed) {
-	        debug!("{} jobs are running", set.len());
+            debug!("{} jobs are running", set.len());
             select! {
                 r = set.join_next() => {
                     if r.is_none() && NUM_THREADS.load(Ordering::Relaxed) == 0 {
@@ -159,7 +159,10 @@ async fn get_remote_job(
     let mut iter = msg.peer_ips.iter();
     let conn = 'a: loop {
         if let Some(ip) = iter.next() {
-            if let Some(conn) = pool.read().await.get(ip).cloned() {
+            let guard = pool.read().await;
+            let option = guard.get(ip).cloned();
+            drop(guard);
+            if let Some(conn) = option {
                 if let Some(_) = conn.close_reason() {
                     debug!(
                         "Discarding closed connection to peer: {:?}",
@@ -172,7 +175,7 @@ async fn get_remote_job(
                 }
             }
         } else {
-	        debug!("Found no connections to reuse");
+            debug!("Found no connections to reuse");
             let mut iter = msg.peer_ips.iter();
             loop {
                 if let Some(ip) = iter.next() {
@@ -236,7 +239,8 @@ async fn get_remote_job(
                 _tx.send(SQLiteCommand::RemovePeer {
                     peer_id: msg.peer_id,
                 })
-                .await.expect("Failed to send remove peer command");
+                .await
+                .expect("Failed to send remove peer command");
                 error!("Error running remote job: {:?}", e);
             }
         });

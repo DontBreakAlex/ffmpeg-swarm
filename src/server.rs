@@ -32,7 +32,7 @@ use tokio::sync::mpsc::{self, channel, Sender};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
-const KEEP_ALIVE_SECS: u64 = 120;
+const KEEP_ALIVE_SECS: u64 = 10;
 
 pub fn run() -> Result<()> {
     tracing_subscriber::fmt()
